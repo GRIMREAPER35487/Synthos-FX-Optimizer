@@ -12,8 +12,6 @@ using VRC.SDK3.Dynamics.Contact.Components;
 using VRC.Dynamics;
 using VRC.SDKBase.Validation.Performance;
 
-using MaterialSlot = SynthosFxOptimizer.MaterialSlot;
-
 [CustomEditor(typeof(SynthosFxOptimizer))]
 public class SynthosFxOptimizerEditor : Editor
 {
@@ -143,55 +141,14 @@ public class SynthosFxOptimizerEditor : Editor
         }
 
         Profiler.StartSection("Show Perf Rank Change");
-        static int ParticleSystemMaterialCount(ParticleSystemRenderer psr) => psr.trailMaterial != null ? 2 : 1;
-        var allRenderers = optimizer.GetNonEditorOnlyComponentsInChildren<Renderer>();
-        var particleSystemCount = allRenderers.OfType<ParticleSystemRenderer>().Sum(ParticleSystemMaterialCount);
-        var trailRendererCount = allRenderers.OfType<TrailRenderer>().Count();
-        var skinnedMeshes = allRenderers.OfType<SkinnedMeshRenderer>().ToList();
-        var meshRenderers = allRenderers.OfType<MeshRenderer>().ToList();
-        int totalMaterialCount = skinnedMeshes.Cast<Renderer>().Concat(meshRenderers)
-            .Sum(r => r.GetSharedMesh() == null ? 0 : r.GetSharedMesh().subMeshCount) + particleSystemCount + trailRendererCount;
+        var skinnedMeshes = optimizer.GetNonEditorOnlyComponentsInChildren<SkinnedMeshRenderer>();
         var totalBlendShapePaths = new HashSet<string>(skinnedMeshes.SelectMany(r => {
             if (r.sharedMesh == null)
                 return new string[0];
             return Enumerable.Range(0, r.sharedMesh.blendShapeCount)
                 .Select(i => $"{optimizer.GetPathToRoot(r.transform)}/blendShape.{r.sharedMesh.GetBlendShapeName(i)}");
         }));
-        int optimizedSkinnedMeshCount = 0;
-        int optimizedMeshCount = 0;
-        int optimizedTotalMaterialCount = 0;
-        var exclusions = optimizer.GetAllExcludedTransforms();
-        foreach (var matched in MergedMaterialPreview)
-        {
-            var renderers = matched.SelectMany(m => m).Select(slot => slot.renderer).Distinct().ToArray();
-            if (renderers.Any(r => r is SkinnedMeshRenderer) || renderers.Length > 1)
-            {
-                optimizedSkinnedMeshCount++;
-                if (exclusions.Contains(renderers[0].transform))
-                    optimizedTotalMaterialCount += renderers[0].GetSharedMesh().subMeshCount;
-                else
-                    optimizedTotalMaterialCount += matched.Count;
-            }
-            else if (renderers[0] is MeshRenderer)
-            {
-                optimizedMeshCount++;
-                var mesh = renderers[0].GetSharedMesh();
-                optimizedTotalMaterialCount += mesh == null ? 0 : mesh.subMeshCount;
-            }
-            else if (renderers[0] is ParticleSystemRenderer psr)
-            {
-                optimizedTotalMaterialCount += ParticleSystemMaterialCount(psr);
-            }
-            else // TrailRenderer
-            {
-                optimizedTotalMaterialCount += 1;
-            }
-        }
-        var perfRankChanges = new List<(string label, int oldValue, int newValue, PerformanceCategory category)> {
-            ("Skinned Mesh Renderers", skinnedMeshes.Count, optimizedSkinnedMeshCount, PerformanceCategory.SkinnedMeshCount),
-            ("Mesh Renderers", meshRenderers.Count, optimizedMeshCount, PerformanceCategory.MeshCount),
-            ("Material Slots", totalMaterialCount, optimizedTotalMaterialCount, PerformanceCategory.MaterialCount),
-        };
+        var perfRankChanges = new List<(string label, int oldValue, int newValue, PerformanceCategory category)>();
         if (optimizer.GetFXLayer() != null)
         {
             var nonErrors = new HashSet<string>() {"toggle", "motion time", "blend tree", "multi toggle"};
@@ -206,34 +163,13 @@ public class SynthosFxOptimizerEditor : Editor
         PerfRankChangeLabel(perfRankChanges);
         Profiler.EndSection();
 
-        EditorGUILayout.Separator();
-
-        if (Foldout("Show Mesh & Material Merge Preview", ref optimizer.ShowMeshAndMaterialMergePreview, showNonDestructiveToolingWarning: true))
+        var summary = optimizer.GetLastBuildSummary();
+        if (summary != null)
         {
-            Profiler.StartSection("Show Merge Preview");
-            foreach (var matched in MergedMaterialPreview)
-            {
-                for (int i = 0; i < matched.Count; i++)
-                {
-                    using var horizontalScope = new EditorGUILayout.HorizontalScope();
-                    using (new EditorGUILayout.VerticalScope())
-                    {
-                        for (int j = 0; j < matched[i].Count; j++)
-                        {
-                            int indent = j == 0 ? 0 : 1;
-                            DrawMatchedMaterialSlot(matched[i][j], indent);
-                        }
-                    }
-                    var materials = matched[i].Select(slot => slot.material).Distinct().ToArray();
-                    var buttonContent = new GUIContent("S", $"Selects this group of {materials.Length} materials");
-                    if (GUILayout.Button(buttonContent, GUILayout.Width(20)))
-                    {
-                        Selection.objects = materials;
-                    }
-                }
-                EditorGUILayout.Space(8);
-            }
-            Profiler.EndSection();
+            EditorGUILayout.HelpBox($"Last upload ({summary.time}):\n" +
+                $"FX layers {summary.fxLayersBefore} -> {summary.fxLayersAfter}, FX parameters {summary.fxParametersBefore} -> {summary.fxParametersAfter}\n" +
+                $"Blend shapes {summary.blendShapesBefore} -> {summary.blendShapesAfter}\n" +
+                $"Phys bones auto disabled: {summary.physBonesDisabled}, unused components deleted: {summary.componentsDeleted}", MessageType.Info);
         }
 
         EditorGUILayout.Separator();
@@ -283,12 +219,6 @@ public class SynthosFxOptimizerEditor : Editor
         if (Foldout("Debug Info", ref optimizer.ShowDebugInfo, showNonDestructiveToolingWarning: true))
         {
             using var indent = new EditorGUI.IndentLevelScope();
-            if (Foldout("NonBC5 Normal Maps", ref optimizer.DebugShowNonBC5NormalMaps))
-            {
-                Profiler.StartSection("NonBC5 Normal Maps");
-                DrawDebugList(NonBC5NormalMaps);
-                Profiler.EndSection();
-            }
             if (optimizer.MergeSameRatioBlendShapes && Foldout("Same Ratio Blend Shapes", ref optimizer.DebugShowMergeableBlendShapes))
             {
                 Profiler.StartSection("Same Ratio Blend Shapes");
@@ -364,40 +294,10 @@ public class SynthosFxOptimizerEditor : Editor
                 DrawDebugList(optimizer.FindAllAlwaysDisabledGameObjects().ToArray());
                 Profiler.EndSection();
             }
-            if (Foldout("Material Swaps", ref optimizer.DebugShowMaterialSwaps))
-            {
-                Profiler.StartSection("Material Swaps");
-                var map = optimizer.FindAllMaterialSwapMaterials();
-                foreach (var pair in map)
-                {
-                    EditorGUILayout.LabelField(pair.Key.path + " -> " + pair.Key.index);
-                    using (new EditorGUI.IndentLevelScope())
-                    {
-                        DrawDebugList(pair.Value.ToArray());
-                    }
-                }
-                if (map.Count == 0)
-                {
-                    EditorGUILayout.LabelField("---");
-                }
-                Profiler.EndSection();
-            }
-            if (Foldout("Animated Material Property Paths", ref optimizer.DebugShowAnimatedMaterialPropertyPaths))
-            {
-                Profiler.StartSection("Animated Material Property Paths");
-                DrawDebugList(AnimatedMaterialPropertyPaths);
-                Profiler.EndSection();
-            }
             if (Foldout("Game Objects with Toggle Animation", ref optimizer.DebugShowGameObjectsWithToggle))
             {
                 Profiler.StartSection("Game Objects with Toggle Animation");
                 DrawDebugList(GameObjectsWithToggleAnimations);
-                Profiler.EndSection();
-            }
-            if (Foldout("Unmoving Bones", ref optimizer.DebugShowUnmovingBones))
-            {
-                Profiler.StartSection("Unmoving Bones");
-                DrawDebugList(UnmovingBones);
                 Profiler.EndSection();
             }
         }
@@ -459,12 +359,6 @@ public class SynthosFxOptimizerEditor : Editor
             EditorGUILayout.LabelField(new GUIContent(message, icon, tooltip ?? ""), style);
         }
 
-        static string TexturesTooltip(Texture[] textures, string header = null)
-        {
-            var lines = TooltipLines(textures.Select(t => t == null ? "null" : t.name), "textures");
-            return header == null ? string.Join("\n", lines) : $"{header}\n{string.Join("\n", lines)}";
-        }
-
         var avDescriptor = optimizer.GetAvatarDescriptor();
 
         if (avDescriptor == null)
@@ -522,48 +416,21 @@ public class SynthosFxOptimizerEditor : Editor
             }
         }
 
-        if (NonBC5NormalMaps.Length > 0)
-        {
-            HelpBox(
-                "Some normal maps are not BC5 compressed.\n" +
-                "BC5 compressed normal maps are highest quality for the same VRAM size as the other compression options.\n" +
-                "Check the Debug Info foldout for a full list or click the button to automatically change them all to BC5.",
-                MessageType.Info,
-                TexturesTooltip(NonBC5NormalMaps, "Non BC5 normal maps:"));
-            if (GUILayout.Button($"Convert all ({NonBC5NormalMaps.Length}) normal maps to BC5"))
-            {
-                foreach (var tex in NonBC5NormalMaps)
-                {
-                    var path = AssetDatabase.GetAssetPath(tex);
-                    var importer = AssetImporter.GetAtPath(path) as TextureImporter;
-                    var platformSettings = importer.GetPlatformTextureSettings("Standalone");
-                    platformSettings.resizeAlgorithm = TextureResizeAlgorithm.Bilinear;
-                    platformSettings.overridden = true;
-                    platformSettings.format = TextureImporterFormat.BC5;
-                    platformSettings.maxTextureSize = Mathf.Max(tex.width, tex.height);
-                    importer.SetPlatformTextureSettings(platformSettings);
-                    importer.SaveAndReimport();
-                }
-                ClearUICaches();
-            }
-        }
-
         var tools = optimizer.GetNonDestructiveToolsUsedOnAvatar();
         if (tools.Contains("VRCFury"))
         {
             HelpBox(
-                "VRCFury is used on the avatar. This means the perf rank change and merge result previews can be inaccurate as the optimizer does not take VRCFury into account for those.\n" +
-                "To test in editor built a VRCFury test avatar and use the optimizer on that.\n" +
-                $"For uploading use the {SynthosFxOptimizer.GetDisplayName(nameof(SynthosFxOptimizer.ApplyOnUpload))} feature as that ensures fury and the optimizer get used in the correct order.", MessageType.Warning);
+                "VRCFury is used on the avatar. The previews below show your controller before VRCFury builds it, so they will differ from what gets uploaded.\n" +
+                "Check the last upload summary or the log file for the real result.\n" +
+                $"For uploading use the {SynthosFxOptimizer.GetDisplayName(nameof(SynthosFxOptimizer.ApplyOnUpload))} feature as that ensures VRCFury and the optimizer get used in the correct order.", MessageType.Warning);
             return false;
         }
 
         if (tools.Contains("Modular Avatar"))
         {
             HelpBox(
-                "Modular Avatar is used on the avatar. This means the perf rank change and merge result previews " + 
-                "can be inaccurate as the optimizer does not take Modular Avatar into account for those.\n" +
-                "To test in editor use \"Manual bake avatar\" before clicking the optimize button.\n" +
+                "Modular Avatar is used on the avatar. The previews below show your controller before Modular Avatar builds it, so they will differ from what gets uploaded.\n" +
+                "Check the last upload summary or the log file for the real result.\n" +
                 $"For uploading use the {SynthosFxOptimizer.GetDisplayName(nameof(SynthosFxOptimizer.ApplyOnUpload))} feature as that ensures Modular Avatar and the optimizer get used in the correct order.", MessageType.Warning);
             return false;
         }
@@ -581,47 +448,18 @@ public class SynthosFxOptimizerEditor : Editor
                $"\nThis means the {sectionName} can be wrong as {(tools.Count == 1 ? "this tool" : "these tools")} can change the avatar at build time which the optimizer can't see before it happens.";
     }
 
-    private static void AssignNewAvatarIDIfEmpty()
-    {
-        var avDescriptor = optimizer.GetAvatarDescriptor();
-        if (avDescriptor == null)
-            return;
-        if (!avDescriptor.TryGetComponent<VRC.Core.PipelineManager>(out var pm))
-        {
-            pm = avDescriptor.gameObject.AddComponent<VRC.Core.PipelineManager>();
-        }
-        if (!string.IsNullOrEmpty(pm.blueprintId))
-            return;
-        pm.AssignId(VRC.Core.PipelineManager.ContentType.avatar);
-    }
-
     private SynthosFxOptimizer lastSelected = null;
-    private List<List<List<MaterialSlot>>> mergedMaterialPreviewCache = null;
-    private Transform[] unmovingBonesCache = null;
     private GameObject[] gameObjectsWithToggleAnimationsCache = null;
-    private Texture2D[] crunchedTexturesCache = null;
-    private Texture2D[] nonBC5NormalMapsCache = null;
-    private Renderer[] cantMergeNaNimationBecauseOfWDONAnimationsCache = null;
-    private string[] animatedMaterialPropertyPathsCache = null;
     private HashSet<string> keptBlendShapePathsCache = null;
     private List<List<(string blendshape, float value)>> mergeableBlendShapesCache = null;
-    private Dictionary<Mesh, (int count, float maxValue, float medianValue)[]> meshBoneWeightStatsCache = null;
-    private Dictionary<Material, string[]> propertiesMarkedAsRenameAnimatedCache = null;
 
     private void ClearUICaches(bool force = false)
     {
         if (!force && longestTimeUsed > AvatarOptimizerSettings.AutoRefreshPreviewTimeout)
             return;
-        mergedMaterialPreviewCache = null;
-        unmovingBonesCache = null;
         gameObjectsWithToggleAnimationsCache = null;
-        crunchedTexturesCache = null;
-        nonBC5NormalMapsCache = null;
-        cantMergeNaNimationBecauseOfWDONAnimationsCache = null;
-        animatedMaterialPropertyPathsCache = null;
         keptBlendShapePathsCache = null;
         mergeableBlendShapesCache = null;
-        propertiesMarkedAsRenameAnimatedCache = null;
         optimizer.ClearCaches();
     }
 
@@ -638,72 +476,6 @@ public class SynthosFxOptimizerEditor : Editor
             AvatarOptimizerSettings.ApplyDefaults(optimizer);
             optimizer.ApplyAutoSettings();
         }
-        ShaderAnalyzer.ParseAndCacheAllShaders(optimizer.FindAllUsedMaterials().Select(m => m.shader), false);
-    }
-
-    private (int count, float maxValue, float medianValue)[] GetMeshBoneWeightStats(Mesh mesh)
-    {
-        if (meshBoneWeightStatsCache == null)
-            meshBoneWeightStatsCache = new Dictionary<Mesh, (int count, float maxValue, float medianValue)[]>();
-        if (mesh == null)
-            return new (int count, float maxValue, float medianValue)[4];
-        if (!meshBoneWeightStatsCache.TryGetValue(mesh, out var stats))
-        {
-            stats = new (int count, float maxValue, float medianValue)[4];
-            var nonZeroWeights = new List<float>[4]
-            {
-                new List<float>(),
-                new List<float>(),
-                new List<float>(),
-                new List<float>(),
-            };
-            var boneWeights = mesh.boneWeights;
-            for (int i = 0; i < boneWeights.Length; i++)
-            {
-                var weight = boneWeights[i];
-                if (weight.weight0 > 0)
-                    nonZeroWeights[0].Add(weight.weight0);
-                if (weight.weight1 > 0)
-                    nonZeroWeights[1].Add(weight.weight1);
-                if (weight.weight2 > 0)
-                    nonZeroWeights[2].Add(weight.weight2);
-                if (weight.weight3 > 0)
-                    nonZeroWeights[3].Add(weight.weight3);
-            }
-            for (int i = 0; i < 4; i++)
-            {
-                stats[i].count = nonZeroWeights[i].Count;
-                if (stats[i].count == 0)
-                {
-                    stats[i].maxValue = 0;
-                    stats[i].medianValue = 0;
-                    continue;
-                }
-                nonZeroWeights[i].Sort();
-                stats[i].maxValue = nonZeroWeights[i][stats[i].count - 1];
-                stats[i].medianValue = nonZeroWeights[i][stats[i].count / 2];
-            }
-            meshBoneWeightStatsCache.Add(mesh, stats);
-        }
-        return stats;
-    }
-
-    private List<List<List<MaterialSlot>>> MergedMaterialPreview
-    {
-        get
-        {
-            if (mergedMaterialPreviewCache == null)
-            {
-                mergedMaterialPreviewCache = new List<List<List<MaterialSlot>>>();
-                var matchedSkinnedMeshes = optimizer.FindPossibleSkinnedMeshMerges();
-                foreach (var mergedMeshes in matchedSkinnedMeshes)
-                {
-                    var matched = optimizer.FindAllMergeAbleMaterials(mergedMeshes);
-                    mergedMaterialPreviewCache.Add(matched);
-                }
-            }
-            return mergedMaterialPreviewCache;
-        }
     }
 
     private List<List<(string blendshape, float value)>> MergeableBlendShapes
@@ -715,31 +487,14 @@ public class SynthosFxOptimizerEditor : Editor
                 mergeableBlendShapesCache = new List<List<(string blendshape, float value)>>();
                 if (optimizer.MergeSameRatioBlendShapes)
                 {
-                    foreach (var matched in MergedMaterialPreview)
+                    // meshes are never merged, so every mesh is its own blend shape group
+                    foreach (var renderer in optimizer.GetUsedComponentsInChildren<SkinnedMeshRenderer>().Where(r => r.sharedMaterials.Length > 0))
                     {
-                        var renderers = matched.SelectMany(m => m).Select(slot => slot.renderer).Distinct().ToArray();
-                        var mergedBlendShapes = optimizer.FindMergeableBlendShapes(renderers);
-                        mergeableBlendShapesCache.AddRange(mergedBlendShapes);
+                        mergeableBlendShapesCache.AddRange(optimizer.FindMergeableBlendShapes(new Renderer[] { renderer }));
                     }
                 }
             }
             return mergeableBlendShapesCache;
-        }
-    }
-
-    private Renderer[] CantMergeNaNimationBecauseOfWDONAnimations
-    {
-        get
-        {
-            if (cantMergeNaNimationBecauseOfWDONAnimationsCache != null)
-                return cantMergeNaNimationBecauseOfWDONAnimationsCache;
-            return cantMergeNaNimationBecauseOfWDONAnimationsCache =
-                optimizer.FindAllPathsWhereMeshOrGameObjectHasOnlyOnAnimation()
-                    .Select(p => optimizer.GetTransformFromPath(p))
-                    .Where(t => t != null)
-                    .Select(t => t.GetComponent<Renderer>())
-                    .Where(r => r != null && !optimizer.GetRendererDefaultEnabledState(r))
-                    .ToArray();
         }
     }
 
@@ -768,22 +523,6 @@ public class SynthosFxOptimizerEditor : Editor
         }
     }
 
-    private Transform[] UnmovingBones
-    {
-        get
-        {
-            if (unmovingBonesCache == null)
-            {
-                var bones = new HashSet<Transform>();
-                var moving = optimizer.FindAllMovingTransforms();
-                optimizer.GetUsedComponentsInChildren<SkinnedMeshRenderer>().ToList().ForEach(
-                    r => bones.UnionWith(r.bones.Where(b => !moving.Contains(b))));
-                unmovingBonesCache = bones.ToArray();
-            }
-            return unmovingBonesCache;
-        }
-    }
-
     private GameObject[] GameObjectsWithToggleAnimations
     {
         get
@@ -797,218 +536,6 @@ public class SynthosFxOptimizerEditor : Editor
             }
             return gameObjectsWithToggleAnimationsCache;
         }
-    }
-
-    private Texture2D[] CrunchedTextures
-    {
-        get
-        {
-            if (crunchedTexturesCache == null)
-            {
-                var exclusions = optimizer.GetAllExcludedTransforms();
-                var tuple = optimizer.GetUsedComponentsInChildren<Renderer>()
-                    .Where(r => !exclusions.Contains(r.transform))
-                    .SelectMany(r => r.sharedMaterials).Distinct()
-                    .Select(mat => (mat, ShaderAnalyzer.Parse(mat?.shader)))
-                    .Where(t => t.Item2?.parsedCorrectly ?? false).ToArray();
-                var textures = new HashSet<Texture2D>();
-                foreach (var (mat, parsed) in tuple)
-                {
-                    if (!parsed.CanMergeTextures())
-                        continue;
-                    foreach (var prop in parsed.texture2DProperties)
-                    {
-                        var tex = mat.GetTexture(prop.name) as Texture2D;
-                        if (tex != null && (tex.format == TextureFormat.DXT1Crunched || tex.format == TextureFormat.DXT5Crunched))
-                            textures.Add(tex);
-                    }
-                }
-                crunchedTexturesCache = textures.ToArray();
-            }
-            return crunchedTexturesCache;
-        }
-    }
-
-    private Texture2D[] NonBC5NormalMaps
-    {
-        get
-        {
-            if (nonBC5NormalMapsCache == null)
-            {
-                var exclusions = optimizer.GetAllExcludedTransforms();
-                var renderers = optimizer.GetUsedComponentsInChildren<Renderer>();
-                var textures = new HashSet<Texture2D>();
-                var materials = renderers
-                    .Where(r => !exclusions.Contains(r.transform))
-                    .SelectMany(r => r.sharedMaterials)
-                    .Where(mat => mat != null && mat.shader != null)
-                    .Distinct();
-                foreach (var material in materials)
-                {
-                    var parsed = ShaderAnalyzer.Parse(material.shader);
-                    if (parsed == null)
-                        continue;
-                    foreach (var prop in parsed.texture2DProperties)
-                    {
-                        var tex = material.GetTexture(prop.name) as Texture2D;
-                        if (tex != null && tex.format != TextureFormat.BC5)
-                        {
-                            var assetImporter = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(tex)) as TextureImporter;
-                            if (assetImporter != null && assetImporter.textureType == TextureImporterType.NormalMap)
-                            {
-                                textures.Add(tex);
-                            }
-                        }
-                    }
-                }
-                nonBC5NormalMapsCache = textures.ToArray();
-            }
-            return nonBC5NormalMapsCache;
-        }
-    }
-
-    private string[] AnimatedMaterialPropertyPaths
-    {
-        get
-        {
-            if (animatedMaterialPropertyPathsCache == null)
-            {
-                animatedMaterialPropertyPathsCache = optimizer.FindAllAnimatedMaterialProperties()
-                    .SelectMany(kv => kv.Value.Select(prop => $"{kv.Key}.{prop}")).ToArray();
-            }
-            return animatedMaterialPropertyPathsCache;
-        }
-    }
-
-    public bool CanLockIn(Material material)
-    {
-        if (material == null)
-            return false;
-        if (material.HasProperty("_ShaderOptimizer"))
-            return true;
-        if (material.HasProperty("_ShaderOptimizerEnabled"))
-            return true;
-        if (material.HasProperty("__Baked"))
-            return true;
-        return false;
-    }
-
-    public bool IsLockedIn(Material material)
-    {
-        if (material == null)
-            return false;
-        if (material.HasProperty("_ShaderOptimizer") && material.GetInt("_ShaderOptimizer") == 1)
-            return true;
-        if (material.HasProperty("_ShaderOptimizerEnabled") && material.GetInt("_ShaderOptimizerEnabled") == 1)
-            return true;
-        if (material.HasProperty("__Baked") && material.GetInt("__Baked") == 1)
-            return true;
-        return false;
-    }
-
-    private string PropertiesTooltip(Material material, string header = "Properties marked RA:")
-        => $"{header}\n{string.Join("\n", TooltipLines(FindPropertiesMarkedAsRenameAnimated(material), "properties"))}";
-
-    private static IEnumerable<string> TooltipLines(IEnumerable<string> names, string extraNoun)
-    {
-        var distinctNames = names.Distinct().ToList();
-        var extraCount = distinctNames.Count - 15;
-        foreach (var name in distinctNames.Take(15))
-            yield return $"- {name}";
-        if (extraCount == 1)
-            yield return $"- {distinctNames[15]}";
-        else if (extraCount > 1)
-            yield return $"+{extraCount} more {extraNoun}";
-    }
-
-    public bool HasPropertyMarkedAsRenameAnimated(Material material)
-        => FindPropertiesMarkedAsRenameAnimated(material).Length > 0;
-
-    public string[] FindPropertiesMarkedAsRenameAnimated(Material material)
-    {
-        if (material == null)
-            return System.Array.Empty<string>();
-        propertiesMarkedAsRenameAnimatedCache ??= new();
-        if (!CanLockIn(material))
-            return System.Array.Empty<string>();
-        if (propertiesMarkedAsRenameAnimatedCache.TryGetValue(material, out var cached))
-            return cached;
-
-        string CleanStringForPropertyNames(string s)
-        {
-            s = s.Trim().Replace(" ", "");
-            var utf8Source = System.Text.Encoding.UTF8.GetBytes(s);
-            string cleaned = "";
-            for (var i = 0; i < utf8Source.Length; i++)
-            {
-                if ((utf8Source[i] >= 'a' && utf8Source[i] <= 'z') ||
-                    (utf8Source[i] >= 'A' && utf8Source[i] <= 'Z') ||
-                    (utf8Source[i] >= '0' && utf8Source[i] <= '9') || utf8Source[i] == '_')
-                {
-                    cleaned += (char)utf8Source[i];
-                }
-                else
-                {
-                    cleaned += utf8Source[i].ToString("X2");
-                }
-            }
-            return cleaned;
-        }
-        var raSuffix = CleanStringForPropertyNames(material.GetTag("thry_rename_suffix", false, material.name));
-
-        bool EntryHasRenameAnimatedTag(SerializedProperty entry, out string propertyName)
-        {
-            propertyName = null;
-            if (entry == null)
-                return false;
-            var keyProp = entry.FindPropertyRelative("first");
-            var valueProp = entry.FindPropertyRelative("second");
-            if (keyProp == null || valueProp == null
-                || keyProp.propertyType != SerializedPropertyType.String
-                || valueProp.propertyType != SerializedPropertyType.String)
-            {
-                return false;
-            }
-            var tag = keyProp.stringValue;
-            if (string.IsNullOrEmpty(tag))
-                return false;
-            if (!tag.EndsWith("Animated", System.StringComparison.Ordinal))
-                return false;
-            if (valueProp.stringValue != "2")
-                return false;
-            var propName = tag[..^"Animated".Length];
-            if (material.HasProperty(propName))
-            {
-                propertyName = propName;
-                return true;
-            }
-            if (material.HasProperty($"{propName}_{raSuffix}"))
-            {
-                propertyName = $"{propName}_{raSuffix}";
-                return true;
-            }
-            return false;
-        }
-
-        var result = new List<string>();
-        using (var serializedMaterial = new SerializedObject(material))
-        {
-            var tagMap = serializedMaterial.FindProperty("stringTagMap");
-
-            if (tagMap != null && tagMap.isArray)
-            {
-                for (int i = 0; i < tagMap.arraySize; i++)
-                {
-                    if (EntryHasRenameAnimatedTag(tagMap.GetArrayElementAtIndex(i), out var propertyName))
-                        result.Add(propertyName);
-                }
-            }
-        }
-
-        result = result.Distinct().ToList();
-        var resultArray = result.ToArray();
-        propertiesMarkedAsRenameAnimatedCache[material] = resultArray;
-        return resultArray;
     }
 
     private static Dictionary<string, List<string>> tooltipCache = null;
@@ -1143,20 +670,6 @@ public class SynthosFxOptimizerEditor : Editor
             return new GUIContent(label, string.Join("\n", tooltip));
         }
         return new GUIContent(label);
-    }
-
-    private void DrawMatchedMaterialSlot(MaterialSlot slot, int indent)
-    {
-        indent *= 15;
-        using (new EditorGUILayout.HorizontalScope())
-        {
-            GUILayout.Space(indent);
-            EditorGUILayout.ObjectField(slot.renderer, typeof(Renderer), true, GUILayout.Width(EditorGUIUtility.currentViewWidth / 2 - 20 - (indent)));
-            int originalIndent = EditorGUI.indentLevel;
-            EditorGUI.indentLevel = 0;
-            EditorGUILayout.ObjectField(slot.material, typeof(Material), false);
-            EditorGUI.indentLevel = originalIndent;
-        }
     }
 
     public void DrawDebugList<T>(T[] array, System.Func<T, string> tooltipSelector = null) where T : Object
@@ -1296,26 +809,17 @@ public class SynthosFxOptimizerEditor : Editor
 
     enum PerformanceCategory
     {
-        SkinnedMeshCount,
-        MeshCount,
-        MaterialCount,
         FXLayerCount,
         BlendShapeCount,
     }
 
     static Dictionary<PerformanceCategory, int[]> _perfLevelsWindows = new Dictionary<PerformanceCategory, int[]>()
     {
-        { PerformanceCategory.SkinnedMeshCount, new int[] {1, 2, 8, 16, int.MaxValue} },
-        { PerformanceCategory.MeshCount, new int[] {4, 8, 16, 24, int.MaxValue} },
-        { PerformanceCategory.MaterialCount, new int[] {4, 8, 16, 32, int.MaxValue} },
         { PerformanceCategory.FXLayerCount, new int[] {4, 8, 16, 32, int.MaxValue} },
         { PerformanceCategory.BlendShapeCount, new int[] {32, 48, 64, 128, int.MaxValue} },
     };
     static Dictionary<PerformanceCategory, int[]> _perfLevelsAndroid = new Dictionary<PerformanceCategory, int[]>()
     {
-        { PerformanceCategory.SkinnedMeshCount, new int[] {1, 1, 2, 2, int.MaxValue} },
-        { PerformanceCategory.MeshCount, new int[] {1, 1, 2, 2, int.MaxValue} },
-        { PerformanceCategory.MaterialCount, new int[] {1, 1, 2, 4, int.MaxValue} },
         { PerformanceCategory.FXLayerCount, new int[] {2, 4, 8, 16, int.MaxValue} },
         { PerformanceCategory.BlendShapeCount, new int[] {24, 32, 48, 64, int.MaxValue} },
     };

@@ -1,4 +1,4 @@
-﻿#if UNITY_EDITOR
+#if UNITY_EDITOR
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -44,19 +44,6 @@ namespace d4rkpl4y3r.AvatarOptimizer.Extensions
             {
                 return null;
             }
-        }
-
-        public static Transform GetRootBone(this Renderer renderer)
-        {
-            if (renderer is SkinnedMeshRenderer skinnedMeshRenderer)
-            {
-                var bone = skinnedMeshRenderer.rootBone;
-                if (bone != null)
-                {
-                    return bone;
-                }
-            }
-            return renderer.transform;
         }
 
         // using mesh.boneWeights = boneWeights; causes the mesh to always use 4 bone weights per vertex
@@ -111,24 +98,6 @@ namespace d4rkpl4y3r.AvatarOptimizer.Extensions
                     stack.Push(child);
                 }
             }
-        }
-
-        public static bool IsDescendantOf(this Transform transform, Transform ancestor)
-        {
-            if (transform == null || ancestor == null)
-            {
-                return false;
-            }
-            var current = transform;
-            while (current != null)
-            {
-                if (current == ancestor)
-                {
-                    return true;
-                }
-                current = current.parent;
-            }
-            return false;
         }
 
         public static Component[] GetNonNullComponents(this Transform transform)

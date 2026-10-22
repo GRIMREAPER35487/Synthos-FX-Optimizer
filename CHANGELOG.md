@@ -1,4 +1,13 @@
 # Synthos FX Optimizer
+## v1.0.0-beta.2
+### Changes
+* FX layers are no longer merged when they are additive, animate transform rotations, or have an avatar mask while animating transforms or muscles. These could change how the avatar behaves after merging.
+* Add a last upload summary to the inspector and log: FX layers, FX parameters and blend shapes before/after, phys bones auto disabled and unused components deleted.
+* The inspector no longer parses every shader on selection.
+* Remove the BC5 normal map warning, the mesh & material merge preview, the skinned mesh / mesh / material slot rows and the material related debug foldouts.
+* The VRCFury and Modular Avatar warnings now point to the last upload summary instead of the removed optimized copy workflow.
+* Remove the mesh merging, material merging, shader generation and NaNimation code (about 7,000 lines including the shader parser). The optimizer no longer parses shaders at all.
+* Material slots on the same mesh that use the exact same material are still merged into one sub mesh, and unused vertex data is still trimmed.
 ## v1.0.0-beta.1
 First release of the trimmed fork, based on d4rkAvatarOptimizer v4.7.0-beta.2.
 ### Changes

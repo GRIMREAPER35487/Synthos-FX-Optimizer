@@ -16,6 +16,7 @@ So everything except the FX layer work is permanently off. This also removes mos
 * Disables phys bones whose only mesh is toggled off.
 * Removes blend shapes that are never animated and merges blend shapes that are always animated in the same ratio.
 * Deletes components that are disabled and never enabled by animations.
+* Merges material slots on the same mesh that use the exact same material, and trims unused vertex data.
 
 ## What it does not do
 * No mesh or material merging, no shader toggles, no NaNimation, no generated shaders.
@@ -43,6 +44,8 @@ Toggles are layers that:
   * Both states transitions point to the other state.
   * One state can only have a single transition while the other state has to have one transition with one inverse condition per condition of the first state.
   * Transition conditions can be bool `if` & `if not` or int `greater x` & `less x + 1`.
+
+Layers are never merged when they are additive, animate transform rotations (rotations blend differently inside blend trees), or have an avatar mask while animating transforms or muscles.
 
 Multi toggles are layers that:
   * Have no state behaviours.
@@ -73,6 +76,8 @@ Shows which FX layers can be deleted or merged, using the VRChat rank icons:
   * Very Poor - Layer can't be optimized.
 
 Show Detailed Errors lists why a layer was rejected. This preview can be wrong with VRCFury or Modular Avatar, since they change the avatar at build time.
+### Last Upload Summary
+After each upload the inspector shows what the optimizer actually did to the built avatar: FX layers, FX parameters and blend shapes before and after, how many phys bones got auto disabled and how many unused components were deleted. The same line is written to the log file. With VRCFury or Modular Avatar this is the number to trust, not the preview.
 
 ## Using with VRCFury
 The optimizer runs after VRCFury and rewrites the FX controller VRCFury generated. The VRCFury developer does not support avatars that use d4rkAvatarOptimizer. If a toggle breaks, **turn this optimizer off and test again before reporting it to VRCFury**, and mention that you use it if the bug only happens with it on.

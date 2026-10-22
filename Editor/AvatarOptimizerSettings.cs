@@ -161,11 +161,8 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 AutoRefreshPreviewTimeout = IntFieldLeft(
                     new GUIContent("Auto Refresh Preview Timeout", "In milliseconds. If the preview takes longer than this to refresh, the auto refresh will be disabled."),
                     AutoRefreshPreviewTimeout);
-                MotionTimeApproximationSampleCount = IntFieldLeft(
-                    new GUIContent("Motion Time Approximation Sample Count", "The amount of samples used to approximate motion time states. Higher values are more accurate but generate more animation clips."),
-                    MotionTimeApproximationSampleCount);
                 SharedMeshVertexCountExclusionThreshold = IntFieldLeft(
-                    new GUIContent("Shared Mesh Vertex Count Exclusion Threshold", "Skinned Mesh Renderers sharing mesh data above this vertex count are automatically excluded unless Allow Mesh Data Duplication is enabled."),
+                    new GUIContent("Shared Mesh Vertex Count Exclusion Threshold", "Skinned Mesh Renderers sharing mesh data above this vertex count are automatically excluded, so their shared mesh data is not duplicated."),
                     SharedMeshVertexCountExclusionThreshold);
             }
 

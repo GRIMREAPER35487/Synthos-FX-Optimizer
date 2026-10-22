@@ -51,32 +51,16 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
     public bool ShowExcludedTransforms = false;
     public List<Transform> ExcludeTransforms = new();
     public List<bool> ExcludeTransformChildren = new();
-    public bool ShowMeshAndMaterialMergePreview = true;
     public bool ShowFXLayerMergeResults = true;
     private bool _ShowFXLayerMergeErrors = false;
     public bool ShowFXLayerMergeErrors { get { return _ShowFXLayerMergeErrors; } set { _ShowFXLayerMergeErrors = value; } }
     public bool ShowDebugInfo = false;
-    public bool DebugShowUnparsableMaterials = true;
-    public bool DebugShowUnmergableMaterials = true;
-    public bool DebugShowUnmergableTextureMaterials = true;
-    public bool DebugShowCrunchedTextures = true;
-    public bool DebugShowNonBC5NormalMaps = true;
-    public bool DebugShowMeshesThatCantMergeNaNimationCausedByAnimations = true;
-    public bool DebugShowLockedInMaterials = true;
-    public bool DebugShowUnlockedMaterials = true;
-    public bool DebugShowUnlockedMaterialsWithRenameAnimated = true;
-    public bool DebugShowPenetrators = true;
     public bool DebugShowMergeableBlendShapes = true;
     public bool DebugShowFaceTracking = true;
-    public bool DebugShowBoneWeightStats = true;
     public bool DebugShowPhysBoneDependencies = true;
     public bool DebugShowUnusedComponents = true;
     public bool DebugShowAlwaysDisabledGameObjects = true;
-    public bool DebugShowMaterialSwaps = true;
-    public bool DebugShowAnimatedMaterialPropertyPaths = true;
     public bool DebugShowGameObjectsWithToggle = true;
-    public bool DebugShowUnmovingBones = false;
-    public bool DebugShowMaterialContacts = true;
     #endregion
 
     public struct MaterialSlot
@@ -148,16 +132,13 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             DisplayProgressBar("Clear TrashBin Folder", 0.01f);
             ClearTrashBin();
             Profiler.StartSection("ClearCaches()");
-            optimizedMaterials.Clear();
-            optimizedMaterialImportPaths.Clear();
             optimizedSlotSwapMaterials.Clear();
             newAnimationPaths.Clear();
-            pathsToDeleteGameObjectTogglesOn.Clear();
-            texArrayPropertiesToSet.Clear();
             keepTransforms.Clear();
             constantAnimatedValuesToAdd.Clear();
-            animatedMaterialPropertyDefaultValues.Clear();
             ClearCaches();
+            componentsDeletedCount = 0;
+            var statsBefore = CountBuildSummaryStats();
             LogAvatarStats($"Avatar stats for '{GetAvatarDescriptor().name}' before optimization:");
             DisplayProgressBar("Destroying unused components", 0.2f);
             Profiler.StartNextSection("DestroyEditorOnlyGameObjects()");
@@ -167,46 +148,23 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             DisplayProgressBar("Removing duplicate materials", 0.05f);
             Profiler.StartNextSection("DeduplicateMaterials()");
             DeduplicateMaterials();
-            if (WritePropertiesAsStaticValues)
-            {
-                DisplayProgressBar("Parsing Shaders", 0.05f);
-                Profiler.StartNextSection("ParseAndCacheAllShaders()");
-                var shaders = ShaderAnalyzer.ParseAndCacheAllShaders(FindAllUsedMaterials().Select(m => m.shader), true,
-                    (done, total) => DisplayProgressBar($"Parsing Shaders ({done}/{total})", 0.05f + 0.15f * done / total));
-                LogShaderParseResult(shaders);
-            }
             physBonesToDisable = FindAllPhysBonesToDisable();
-            Profiler.StartNextSection("ConvertStaticMeshesToSkinnedMeshes()");
-            ConvertStaticMeshesToSkinnedMeshes();
             Profiler.StartNextSection("CalculateUsedBlendShapePaths()");
             CalculateUsedBlendShapePaths();
-            Profiler.StartNextSection("DeleteAllUnusedSkinnedMeshRenderers()");
-            DeleteAllUnusedSkinnedMeshRenderers();
+            // Meshes are never merged; this only removes unused blend shapes, bakes constant ones
+            // and merges same ratio blend shapes on each skinned mesh.
             Profiler.StartNextSection("CombineSkinnedMeshes()");
-            DisplayProgressBar("Combining meshes", 0.2f);
+            DisplayProgressBar("Optimizing blend shapes", 0.2f);
             CombineSkinnedMeshes();
-            Profiler.StartNextSection("CreateTextureArrays()");
-            CreateTextureArrays();
-            Profiler.StartNextSection("CombineAndOptimizeMaterials()");
-            DisplayProgressBar("Optimizing materials", 0.3f);
-            CombineAndOptimizeMaterials();
-            Profiler.StartNextSection("OptimizeMaterialSwapMaterials()");
-            OptimizeMaterialSwapMaterials();
-            Profiler.StartNextSection("OptimizeMaterialsOnNonSkinnedMeshes()");
-            OptimizeMaterialsOnNonSkinnedMeshes();
-            Profiler.StartNextSection("SaveOptimizedMaterials()");
-            DisplayProgressBar("Reload optimized materials", 0.60f);
-            SaveOptimizedMaterials();
-            Profiler.StartNextSection("DestroyUnusedGameObjects()");
-            DisplayProgressBar("Destroying unused GameObjects", 0.90f);
-            DestroyUnusedGameObjects();
+            Profiler.StartNextSection("MergeIdenticalMaterialSlots()");
+            DisplayProgressBar("Merging identical material slots", 0.4f);
+            MergeIdenticalMaterialSlots();
             Profiler.StartNextSection("FixAllAnimationPaths()");
-            DisplayProgressBar("Fixing animation paths", 0.95f);
+            DisplayProgressBar("Fixing animation paths", 0.6f);
             FixAllAnimationPaths();
-            Profiler.StartNextSection("MoveRingFingerColliderToFeet()");
             DisplayProgressBar("Done", 1.0f);
-            MoveRingFingerColliderToFeet();
             LogAvatarStats("Avatar stats after optimization:");
+            SaveBuildSummary(statsBefore, CountBuildSummaryStats());
             Profiler.StartNextSection("DestroyImmediate(this)");
             var t = transform;
             DestroyImmediate(this);
@@ -229,23 +187,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
 
     public static bool HasCustomShaderSupport { get => EditorUserBuildSettings.activeBuildTarget == BuildTarget.StandaloneWindows64; }
     public bool ApplyOnUpload { get { return settings.ApplyOnUpload; } set { settings.ApplyOnUpload = value; } }
-    // Synthos FX Optimizer keeps only the features that measured as real gains (FX layer merging + cleanup).
-    // Mesh/material merging, shader toggles, NaNimation and lock-in are permanently off; the code paths
-    // behind these properties are left in place so upstream fixes can still be merged.
-    public bool WritePropertiesAsStaticValues => false;
-    public bool MergeSkinnedMeshes => false;
-    public bool MergeSkinnedMeshesWithShaderToggle => false;
-    public bool MergeSkinnedMeshesWithNaNimation => false;
-    public bool NaNimationAllow3BoneSkinning => false;
-    public bool MergeSkinnedMeshesSeparatedByDefaultEnabledState => false;
-    public bool MergeStaticMeshesAsSkinned => false;
-    public bool MergeDifferentPropertyMaterials => false;
-    public bool MergeSameDimensionTextures => false;
-    public bool MergeMainTex => false;
-    public bool DeleteUnusedGameObjects => false;
-    public bool CombineApproximateMotionTimeAnimations => false;
-    public bool UseRingFingerAsFootCollider => false;
-    public bool AllowMeshDataDuplication => false;
+
     public bool MMDCompatibility { get { return settings.MMDCompatibility; } set { settings.MMDCompatibility = value; } }
     public bool DeleteUnusedComponents { get { return settings.DeleteUnusedComponents; } set { settings.DeleteUnusedComponents = value; } }
     public bool OptimizeFXLayer { get { return settings.OptimizeFXLayer; } set { settings.OptimizeFXLayer = value; } }
@@ -324,25 +266,15 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
     private HashSet<string> usedBlendShapes = new HashSet<string>();
     private Dictionary<SkinnedMeshRenderer, List<int>> blendShapesToBake = new Dictionary<SkinnedMeshRenderer, List<int>>();
     private Dictionary<AnimationPath, AnimationPath> newAnimationPaths = new Dictionary<AnimationPath, AnimationPath>();
-    private HashSet<string> pathsToDeleteGameObjectTogglesOn = new HashSet<string>();
-    private List<(Material target, List<Material> sources, ShaderOptimizer.OptimizedShader optimizerResult)> optimizedMaterials = new List<(Material, List<Material>, ShaderOptimizer.OptimizedShader)>();
-    private List<string> optimizedMaterialImportPaths = new List<string>();
     private Dictionary<string, List<List<string>>> oldPathToMergedPaths = new Dictionary<string, List<List<string>>>();
     private Dictionary<string, string> oldPathToMergedPath = new Dictionary<string, string>();
     private Dictionary<string, List<string>> physBonesToDisable = new Dictionary<string, List<string>>();
     private Dictionary<(string path, int slot), HashSet<Material>> slotSwapMaterials = new Dictionary<(string, int), HashSet<Material>>();
     private Dictionary<(string path, int slot), Dictionary<Material, Material>> optimizedSlotSwapMaterials = new Dictionary<(string, int), Dictionary<Material, Material>>();
     private Dictionary<(string path, int index), (string path, int index)> materialSlotRemap = new Dictionary<(string, int), (string, int)>();
-    private Dictionary<string, HashSet<string>> animatedMaterialProperties = new Dictionary<string, HashSet<string>>();
-    private Dictionary<string, HashSet<string>> fusedAnimatedMaterialProperties = new Dictionary<string, HashSet<string>>();
-    private Dictionary<string, Dictionary<string, Vector4>> animatedMaterialPropertyDefaultValues = new Dictionary<string, Dictionary<string, Vector4>>();
-    private List<List<Texture2D>> textureArrayLists = new List<List<Texture2D>>();
-    private List<Texture2DArray> textureArrays = new List<Texture2DArray>();
-    private Dictionary<Material, List<(string name, Texture2DArray array)>> texArrayPropertiesToSet = new Dictionary<Material, List<(string name, Texture2DArray array)>>();
     private HashSet<Transform> keepTransforms = new HashSet<Transform>();
     private Dictionary<string, Transform> transformFromOldPath = new Dictionary<string, Transform>();
     private Dictionary<EditorCurveBinding, float> constantAnimatedValuesToAdd = new Dictionary<EditorCurveBinding, float>();
-    private Dictionary<string, List<MaterialSlot>> materialSlotsToDisableWhenOriginalPathMeshIsDisabled = new();
     // blendshape names come from https://www.deviantart.com/xoriu/art/MMD-Facial-Expressions-Chart-341504917
     private static HashSet<string> MMDBlendShapes = new HashSet<string>()
     {
@@ -489,7 +421,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             LogToFile($"- Always Optimize on Upload: {AvatarOptimizerSettings.DoOptimizeWithDefaultSettingsWhenNoComponent}");
             LogToFile($"- Optimize in Play Mode: {AvatarOptimizerSettings.DoOptimizeInPlayMode}");
             LogToFile($"- Auto Refresh Preview Timeout: {AvatarOptimizerSettings.AutoRefreshPreviewTimeout} ms");
-            LogToFile($"- Motion Time Approximation Sample Count: {AvatarOptimizerSettings.MotionTimeApproximationSampleCount}");
             LogToFile($"- Shared Mesh Vertex Count Exclusion Threshold: {AvatarOptimizerSettings.SharedMeshVertexCountExclusionThreshold}");
         }
         LogToFile("Settings:");
@@ -557,43 +488,78 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         AssetDatabase.ImportAsset(log.filePath);
     }
 
-    private void LogShaderParseResult(List<ParsedShader> shaders)
+    [System.Serializable]
+    public class BuildSummary
     {
-        if (shaders.Count == 0)
-            return;
-        var filtered = shaders.Distinct().OrderBy(s => s.name).ToList();
-        var unmergeable = filtered.Where(s => !s.CanMerge()).ToList();
-        var mergeable = filtered.Where(s => s.CanMerge()).ToList();
-        LogToFile($"Parsed {filtered.Count} shaders:");
-        if (mergeable.Count > 0)
+        public string time;
+        public int fxLayersBefore, fxLayersAfter;
+        public int fxParametersBefore, fxParametersAfter;
+        public int blendShapesBefore, blendShapesAfter;
+        public int physBonesDisabled;
+        public int componentsDeleted;
+    }
+
+    private const string BuildSummaryPrefsPrefix = "Synthos_FxOptimizer_LastBuild_";
+    private int componentsDeletedCount = 0;
+
+    // The optimizer runs on the upload clone, so the summary is stored by blueprint id (or avatar name)
+    // where the component on the scene avatar can find it again.
+    public string GetBuildSummaryKey()
+    {
+        var av = GetAvatarDescriptor();
+        if (av == null)
+            return null;
+        if (av.TryGetComponent<VRC.Core.PipelineManager>(out var pm) && !string.IsNullOrEmpty(pm.blueprintId))
+            return pm.blueprintId;
+        var name = av.name;
+        return name.EndsWith("(Clone)") ? name.Substring(0, name.Length - "(Clone)".Length).TrimEnd() : name;
+    }
+
+    public BuildSummary GetLastBuildSummary()
+    {
+        var key = GetBuildSummaryKey();
+        if (key == null)
+            return null;
+        var json = EditorPrefs.GetString(BuildSummaryPrefsPrefix + key, "");
+        if (string.IsNullOrEmpty(json))
+            return null;
+        try
         {
-            LogToFile($"- {mergeable.Count} mergeable shaders:", 1);
-            foreach (var shader in mergeable)
-            {
-                LogToFile($"- {shader.name}", 2);
-                foreach (var warning in shader.parserWarnings.Distinct())
-                {
-                    LogToFile($"- Warning: {warning}", 3);
-                }
-            }
+            return JsonUtility.FromJson<BuildSummary>(json);
         }
-        if (unmergeable.Count > 0)
+        catch (System.ArgumentException)
         {
-            LogToFile($"- {unmergeable.Count} unmergeable shaders:", 1);
-            var groupedByMessage = unmergeable.GroupBy(s => s.CantMergeReason()).OrderBy(g => g.Count()).ToList();
-            foreach (var group in groupedByMessage)
-            {
-                LogToFile($"- {group.Key}", 2);
-                foreach (var shader in group)
-                {
-                    LogToFile($"- {shader.name}", 3);
-                    foreach (var warning in shader.parserWarnings.Distinct())
-                    {
-                        LogToFile($"- Warning: {warning}", 4);
-                    }
-                }
-            }
+            return null;
         }
+    }
+
+    private (int fxLayers, int fxParameters, int blendShapes) CountBuildSummaryStats()
+    {
+        var fx = GetFXLayer();
+        var blendShapes = GetRootTransform().GetComponentsInChildren<SkinnedMeshRenderer>(true)
+            .Sum(r => r.sharedMesh == null ? 0 : r.sharedMesh.blendShapeCount);
+        return (fx == null ? 0 : fx.layers.Length, fx == null ? 0 : fx.parameters.Length, blendShapes);
+    }
+
+    private void SaveBuildSummary((int fxLayers, int fxParameters, int blendShapes) before, (int fxLayers, int fxParameters, int blendShapes) after)
+    {
+        var summary = new BuildSummary
+        {
+            time = System.DateTime.Now.ToString("yyyy-MM-dd HH:mm"),
+            fxLayersBefore = before.fxLayers,
+            fxLayersAfter = after.fxLayers,
+            fxParametersBefore = before.fxParameters,
+            fxParametersAfter = after.fxParameters,
+            blendShapesBefore = before.blendShapes,
+            blendShapesAfter = after.blendShapes,
+            physBonesDisabled = physBonesToDisable.Values.SelectMany(paths => paths).Distinct().Count(),
+            componentsDeleted = componentsDeletedCount,
+        };
+        LogToFile($"Summary: FX layers {summary.fxLayersBefore} -> {summary.fxLayersAfter}, FX parameters {summary.fxParametersBefore} -> {summary.fxParametersAfter}, "
+            + $"blend shapes {summary.blendShapesBefore} -> {summary.blendShapesAfter}, phys bones auto disabled {summary.physBonesDisabled}, components deleted {summary.componentsDeleted}");
+        var key = GetBuildSummaryKey();
+        if (key != null)
+            EditorPrefs.SetString(BuildSummaryPrefsPrefix + key, JsonUtility.ToJson(summary));
     }
 
     private AnimatorController[] GetAvDescriptorControllers()
@@ -843,53 +809,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return (meshes, names);
     }
 
-    private Dictionary<(SkinnedMeshRenderer, SkinnedMeshRenderer, string), bool> cache_FaceTrackingCurvesMatch;
-    private bool FaceTrackingBlendShapeCurvesMatch(SkinnedMeshRenderer a, SkinnedMeshRenderer b, string name)
-    {
-        cache_FaceTrackingCurvesMatch ??= new();
-        if (cache_FaceTrackingCurvesMatch.TryGetValue((a, b, name), out var result))
-            return result;
-        bool CurvesMatch()
-        {
-            if (a.GetBlendShapeWeight(a.sharedMesh.GetBlendShapeIndex(name)) != b.GetBlendShapeWeight(b.sharedMesh.GetBlendShapeIndex(name)))
-                return false;
-            var aBinding = EditorCurveBinding.FloatCurve(GetPathToRoot(a), typeof(SkinnedMeshRenderer), "blendShape." + name);
-            var bBinding = EditorCurveBinding.FloatCurve(GetPathToRoot(b), typeof(SkinnedMeshRenderer), "blendShape." + name);
-            foreach (var clip in GetAllUsedAnimationClips())
-            {
-                var aCurve = AnimationUtility.GetEditorCurve(clip, aBinding);
-                var bCurve = AnimationUtility.GetEditorCurve(clip, bBinding);
-                if (!AnimationCurvesHaveSameKeys(aCurve, bCurve))
-                    return false;
-                // Shared output curves must also have the same interpolation and extrapolation.
-                if (aCurve != null && (aCurve.preWrapMode != bCurve.preWrapMode || aCurve.postWrapMode != bCurve.postWrapMode
-                    || !aCurve.keys.SequenceEqual(bCurve.keys)))
-                    return false;
-            }
-            return true;
-        }
-        return cache_FaceTrackingCurvesMatch[(a, b, name)] = CurvesMatch();
-    }
-
-    private string FaceTrackingMergeError(List<Renderer> list, Renderer candidate)
-    {
-        var (meshes, names) = GetFaceTrackingSetup();
-        if (!(candidate is SkinnedMeshRenderer b) || !meshes.Contains(b) || b.sharedMesh == null)
-            return null;
-        foreach (var a in list.OfType<SkinnedMeshRenderer>().Where(meshes.Contains))
-        {
-            if (a.sharedMesh == null)
-                continue;
-            foreach (var name in names)
-            {
-                if (a.sharedMesh.GetBlendShapeIndex(name) >= 0 && b.sharedMesh.GetBlendShapeIndex(name) >= 0
-                    && !FaceTrackingBlendShapeCurvesMatch(a, b, name))
-                    return $"Face tracking blendshape '{name}' has different animations or default weights on '{GetPathToRoot(a)}' and '{GetPathToRoot(b)}'";
-            }
-        }
-        return null;
-    }
-
     private HashSet<Type> cache_GetAllComponentTypesInAvatar = null;
     public HashSet<Type> GetAllComponentTypesInAvatar()
     {
@@ -1013,14 +932,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return Enumerable.Range(0, mesh.subMeshCount).Sum(i => mesh.GetIndexCount(i) / (mesh.GetTopology(i) == MeshTopology.Quads ? 2 : 3));
     }
 
-    private static bool HasExtraMaterialSlots(Renderer renderer)
-    {
-        if (renderer == null)
-            return false;
-        var mesh = renderer.GetSharedMesh();
-        return mesh != null && renderer.sharedMaterials.Length > mesh.subMeshCount;
-    }
-
     public long GetRendererExtraMaterialSlotPolyCount(Renderer renderer)
     {
         if (renderer == null || !(renderer is SkinnedMeshRenderer || renderer is MeshRenderer))
@@ -1032,11 +943,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         int lastSubMeshIndex = mesh.subMeshCount - 1;
         long polygonsPerExtraSlot = mesh.GetIndexCount(lastSubMeshIndex) / (mesh.GetTopology(lastSubMeshIndex) == MeshTopology.Quads ? 2 : 3);
         return polygonsPerExtraSlot * extraMaterialSlotCount;
-    }
-
-    public long GetPolyCount()
-    {
-        return GetUsedComponentsInChildren<Renderer>().Sum(r => GetRendererPolyCount(r));
     }
 
     private Dictionary<Renderer, List<ParticleSystem>> cache_ParticleSystemsUsingRenderer = null;
@@ -1117,776 +1023,25 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return cache_MaterialContactReceiversUsingRenderer[candidate] = new HashSet<VRCContactReceiver>();
     }
 
-    public List<(VRCContactReceiver receiver, List<Renderer> targets)> FindMaterialContactReceiverGroups()
-    {
-        var result = new List<(VRCContactReceiver receiver, List<Renderer> targets)>();
-        foreach (var receiver in FindAllMaterialContactReceivers())
-        {
-            var targets = GetShaderTargetRenderers(receiver)?.Where(r => r != null).Distinct().ToList() ?? new List<Renderer>();
-            result.Add((receiver, targets));
-        }
-        return result.OrderBy(g => GetPathToRoot(g.receiver)).ToList();
-    }
-
-    private string MaterialContactReceiversMergeError(Renderer groupHead, Renderer candidate)
-    {
-        var groupReceivers = GetMaterialContactReceiversUsingRenderer(groupHead);
-        var candidateReceivers = GetMaterialContactReceiversUsingRenderer(candidate);
-        if (groupReceivers.SetEquals(candidateReceivers))
-            return null;
-        var onlyInGroup = groupReceivers.FirstOrDefault(r => !candidateReceivers.Contains(r));
-        if (onlyInGroup != null)
-            return $"Group is bound to material contact receiver at '{GetPathToRoot(onlyInGroup)}' but mesh is not";
-        return $"Bound to material contact receiver at '{GetPathToRoot(candidateReceivers.First(r => !groupReceivers.Contains(r)))}' but group is not";
-    }
-
-    private static string CanCombineMaterialWithOtherMeshesError(Material material)
-    {
-        if (material == null)
-            return "Material is null";
-        var parsedShader = ShaderAnalyzer.Parse(material.shader);
-        return parsedShader.CanMerge() ? null : parsedShader.CantMergeReason();
-    }
-
-    private static bool MaterialHasDisableBatching(Material material)
-    {
-        if (material == null)
-            return false;
-        return material.GetTag("DisableBatching", false, "false").ToLowerInvariant() == "true";
-    }
-
-    private string IsBasicCombinableRendererError(Renderer candidate)
-    {
-        if (!MergeSkinnedMeshes)
-            return "Merging skinned meshes is disabled";
-        var mesh = candidate.GetSharedMesh();
-        if (HasExtraMaterialSlots(candidate) && mesh.subMeshCount == 0)
-            return "Has material slots but no sub meshes";
-        if (HasExtraMaterialSlots(candidate) && GetPathToRoot(candidate) == "Body" && MMDCompatibility)
-            return "Body has more material slots than sub meshes and must remain the first renderer in a merge group for MMD compatibility";
-        if (candidate.TryGetComponent(out Cloth cloth))
-            return "Has Cloth component";
-        if (candidate.transform == GetRootTransform())
-            return "Is on the root transform";
-        if (FindAllPathsWithIndependentRendererAndGameObjectToggles().Contains(GetPathToRoot(candidate)))
-            return "Affected by independent renderer component and game object toggles";
-        if (candidate is MeshRenderer && !MergeStaticMeshesAsSkinned)
-            return "Renderer is a MeshRenderer and merging static meshes as skinned is disabled";
-        if (candidate is MeshRenderer && candidate.gameObject.layer == 12)
-            return "MeshRenderer is on layer 12";
-        if (GetParticleSystemsUsingRenderer(candidate).Any(ps => !ps.shape.useMeshMaterialIndex || candidate is MeshRenderer))
-            return "Affected by particle system using this renderer";
-        foreach (var slot in MaterialSlot.GetAllSlotsFrom(candidate))
-        {
-            var material = slot.material;
-            if (MaterialHasDisableBatching(material))
-                return $"Material '{material.name}' slot {slot.index} has DisableBatching set to true";
-            if (slotSwapMaterials.TryGetValue((GetPathToRoot(slot.renderer), slot.index), out var materials))
-            {
-                var swapMaterialWithDisableBatching = materials.FirstOrDefault(MaterialHasDisableBatching);
-                if (swapMaterialWithDisableBatching != null)
-                    return $"Material swap '{swapMaterialWithDisableBatching.name}' slot {slot.index} has DisableBatching set to true";
-            }
-        }
-        return null;
-    }
-
-    private Dictionary<Renderer, bool> cache_UsesUV0ZW = null;
-    private bool UsesUV0ZW(Renderer renderer)
-    {
-        if (renderer == null)
-            return false;
-        cache_UsesUV0ZW ??= new Dictionary<Renderer, bool>();
-        if (cache_UsesUV0ZW.TryGetValue(renderer, out var cachedResult))
-            return cachedResult;
-        var mesh = renderer.GetSharedMesh();
-        if (mesh == null)
-            return cache_UsesUV0ZW[renderer] = false;
-        for (int i = 0; i < mesh.vertexAttributeCount; i++)
-        {
-            var attr = mesh.GetVertexAttribute(i);
-            if (attr.attribute == VertexAttribute.TexCoord0 && (attr.dimension == 3 || attr.dimension == 4))
-                return cache_UsesUV0ZW[renderer] = true;
-        }
-        return cache_UsesUV0ZW[renderer] = false;
-    }
-
-    private string IsShaderToggleCombinableRendererError(Renderer candidate)
-    {
-        var basicError = IsBasicCombinableRendererError(candidate);
-        if (basicError != null)
-            return basicError;
-        if (UsesUV0ZW(candidate))
-            return $"Renderer uses uv0.zw";
-        foreach (var slot in MaterialSlot.GetAllSlotsFrom(candidate))
-        {
-            var materialError = CanCombineMaterialWithOtherMeshesError(slot.material);
-            if (materialError != null)
-                return $"Material slot {slot.index} cannot be merged: {materialError}";
-            if (slotSwapMaterials.TryGetValue((GetPathToRoot(slot.renderer), slot.index), out var materials))
-            {
-                var slotSwapError = materials.Select(CanCombineMaterialWithOtherMeshesError).FirstOrDefault(err => err != null);
-                if (!materials.Any(material => CanCombineMaterialWithOtherMeshesError(material) == null))
-                    return slotSwapError == null
-                        ? $"Material swap slot {slot.index} has no mergeable materials"
-                        : $"Material swap slot {slot.index} cannot be merged: {slotSwapError}";
-            }
-        }
-        return null;
-    }
-
-    public bool GetRendererDefaultEnabledState(Renderer r) => r.enabled && r.gameObject.activeSelf;
-
-    private string CanCombineRendererWithBasicMerge(List<Renderer> list, Renderer candidate, bool withNaNimation)
-    {
-        var candidateError = IsBasicCombinableRendererError(candidate);
-        if (candidateError != null)
-            return candidateError;
-        var existingRendererError = list.Select(IsBasicCombinableRendererError).FirstOrDefault(err => err != null);
-        if (existingRendererError != null)
-            return existingRendererError;
-        foreach (var renderer in list.Skip(1))
-        {
-            var existingAnimationError = RenderersHaveSameAnimationCurves(renderer, list[0], withNaNimation);
-            if (existingAnimationError != null)
-                return existingAnimationError;
-        }
-        return RenderersHaveSameAnimationCurves(list[0], candidate, withNaNimation);
-    }
-
-    private bool RenderersHaveSameRootBoneScaleSign(Renderer a, Renderer b)
-    {
-        if (a == null || b == null)
-            return true;
-        var scaleA = a.GetRootBone().lossyScale;
-        var scaleB = b.GetRootBone().lossyScale;
-        return Mathf.Sign(scaleA.x) == Mathf.Sign(scaleB.x) && Mathf.Sign(scaleA.y) == Mathf.Sign(scaleB.y) && Mathf.Sign(scaleA.z) == Mathf.Sign(scaleB.z);
-    }
-
-    private string CanCombineRendererWith(List<Renderer> list, Renderer candidate)
-    {
-        if (!MergeSkinnedMeshes)
-            return "Merging skinned meshes is disabled";
-        var faceTrackingError = FaceTrackingMergeError(list, candidate);
-        if (faceTrackingError != null)
-            return faceTrackingError;
-        bool candidateHasExtraMaterialSlots = HasExtraMaterialSlots(candidate);
-        bool groupHasExtraMaterialSlots = list.Any(HasExtraMaterialSlots);
-        if (candidateHasExtraMaterialSlots && groupHasExtraMaterialSlots)
-            return "Only one renderer with more material slots than sub meshes can be in a merge group";
-        if (groupHasExtraMaterialSlots)
-            return "Renderer with more material slots than sub meshes must be last in its merge group";
-        if (list[0].gameObject.layer != candidate.gameObject.layer)
-            return "Layers do not match";
-        if (list[0].shadowCastingMode != candidate.shadowCastingMode)
-            return "Shadow casting modes do not match";
-        if (list[0].receiveShadows != candidate.receiveShadows)
-            return "Receive shadows settings do not match";
-        if (!RenderersHaveSameRootBoneScaleSign(list[0], candidate))
-            return "Root bone scale signs do not match";
-        string OneOfParentsIsMergeBarrierThatTheOthersArentChildrenOf(Transform t, string[] otherPaths, out string barrierType)
-        {
-            barrierType = null;
-            while ((t = t.parent) != GetRootTransform())
-            {
-                var path = GetPathToRoot(t);
-                bool IsSameOrChild(string otherPath) => otherPath == path || otherPath.StartsWithSimple(path + "/");
-                if (GetSkinnedMeshMergeBarrierPaths().TryGetValue(path, out barrierType) && otherPaths.All(p => !IsSameOrChild(p)))
-                {
-                    return path;
-                }
-            }
-            return null;
-        }
-        var listParentBarrierPath = OneOfParentsIsMergeBarrierThatTheOthersArentChildrenOf(list[0].transform, new string[] { GetPathToRoot(candidate.transform.parent) }, out var listBarrierType);
-        if (listParentBarrierPath != null)
-            return $"Parent {listBarrierType} '{listParentBarrierPath}' would affect only part of the merged renderer";
-        var candidateParentBarrierPath = OneOfParentsIsMergeBarrierThatTheOthersArentChildrenOf(candidate.transform, list.Select(r => GetPathToRoot(r.transform.parent)).ToArray(), out var candidateBarrierType);
-        if (candidateParentBarrierPath != null)
-            return $"Parent {candidateBarrierType} '{candidateParentBarrierPath}' would affect only part of the merged renderer";
-        if (MergeSkinnedMeshesSeparatedByDefaultEnabledState)
-        {
-            bool candidateDefaultEnabledState = GetRendererDefaultEnabledState(candidate);
-            if (list.Any(r => GetRendererDefaultEnabledState(r) != candidateDefaultEnabledState))
-                return "Default enabled states do not match";
-        }
-        if (!list.All(r => UsesUV0ZW(r) == UsesUV0ZW(candidate)))
-            return "UV0.zw usage does not match";
-        var materialContactError = MaterialContactReceiversMergeError(list[0], candidate);
-        if (materialContactError != null)
-            return materialContactError;
-        var basicMergeError = CanCombineRendererWithBasicMerge(list, candidate, true);
-        if (basicMergeError == null)
-            return null;
-        if (!MergeSkinnedMeshesWithShaderToggle)
-            return basicMergeError;
-        var candidateShaderToggleError = IsShaderToggleCombinableRendererError(candidate);
-        if (candidateShaderToggleError != null)
-            return candidateShaderToggleError;
-        var existingShaderToggleError = list.Select(IsShaderToggleCombinableRendererError).FirstOrDefault(err => err != null);
-        if (existingShaderToggleError != null)
-            return existingShaderToggleError;
-        return null;
-    }
-
-    private Dictionary<string, bool> cache_MeshUses4BoneSkinning = null;
-    private bool MeshUses4BoneSkinning(string path)
-    {
-        cache_MeshUses4BoneSkinning ??= new();
-        if (cache_MeshUses4BoneSkinning.TryGetValue(path, out var cachedResult))
-            return cachedResult;
-        var renderer = GetTransformFromPath(path)?.GetComponent<Renderer>();
-        if (renderer == null)
-            return cache_MeshUses4BoneSkinning[path] = false;
-        var mesh = renderer.GetSharedMesh();
-        if (mesh == null)
-            return cache_MeshUses4BoneSkinning[path] = false;
-        var boneWeights = mesh.boneWeights;
-        for (int i = 0; i < boneWeights.Length; i++)
-        {
-            if (boneWeights[i].weight3 > 0)
-                return cache_MeshUses4BoneSkinning[path] = true;
-        }
-        return cache_MeshUses4BoneSkinning[path] = false;
-    }
-
-    private Dictionary<string, bool> cache_CanUseNaNimationOnMesh = null;
-    public bool CanUseNaNimationOnMesh(string path)
-    {
-        if (!MergeSkinnedMeshesWithNaNimation)
-            return false;
-        cache_CanUseNaNimationOnMesh ??= new();
-        if (cache_CanUseNaNimationOnMesh.TryGetValue(path, out var cachedResult))
-            return cachedResult;
-        if (!NaNimationAllow3BoneSkinning && MeshUses4BoneSkinning(path))
-            return cache_CanUseNaNimationOnMesh[path] = false;
-        var renderer = GetTransformFromPath(path)?.GetComponent<Renderer>();
-        if (renderer == null)
-            return cache_CanUseNaNimationOnMesh[path] = false;
-        return cache_CanUseNaNimationOnMesh[path] = GetRendererDefaultEnabledState(renderer) || !FindAllPathsWhereMeshOrGameObjectHasOnlyOnAnimation().Contains(path);
-    }
-
-    private HashSet<string> cache_FindAllPathsWhereMeshOrGameObjectHasOnlyOnAnimation = null;
-    public HashSet<string> FindAllPathsWhereMeshOrGameObjectHasOnlyOnAnimation()
-    {
-        if (cache_FindAllPathsWhereMeshOrGameObjectHasOnlyOnAnimation == null) {
-            cache_FindAllPathsWhereMeshOrGameObjectHasOnlyOnAnimation = new HashSet<string>();
-            var goOffPaths = new HashSet<string>();
-            var goOnPaths = new HashSet<string>();
-            var meshOffPaths = new HashSet<string>();
-            var meshOnPaths = new HashSet<string>();
-            var fxLayer = GetFXLayer();
-            var uselessLayers = FindUselessFXLayers();
-            var fxLayerLayers = GetFXLayerLayers();
-            for (int i = 0; fxLayer != null && i < fxLayerLayers.Length; i++) {
-                if (fxLayerLayers[i] == null || fxLayerLayers[i].stateMachine == null)
-                    continue;
-                if (OptimizeFXLayer && (uselessLayers.Contains(i) || IsMergeableFXLayer(i)))
-                    continue;
-                goOffPaths.Clear();
-                goOnPaths.Clear();
-                meshOffPaths.Clear();
-                meshOnPaths.Clear();
-                foreach (var state in fxLayerLayers[i].stateMachine.EnumerateAllStates()) {
-                    if (state.motion == null)
-                        continue;
-                    foreach (var clip in state.motion.EnumerateAllClips()) {
-                        foreach (var binding in AnimationUtility.GetCurveBindings(clip)) {
-                            if (binding.type == typeof(GameObject) && binding.propertyName == "m_IsActive") {
-                                var curve = AnimationUtility.GetEditorCurve(clip, binding);
-                                foreach (var key in curve.keys) {
-                                    if (key.value == 0)
-                                        goOffPaths.Add(binding.path);
-                                    else if (key.value == 1)
-                                        goOnPaths.Add(binding.path);
-                                }
-                            } else if (typeof(Renderer).IsAssignableFrom(binding.type) && binding.propertyName == "m_Enabled") {
-                                var curve = AnimationUtility.GetEditorCurve(clip, binding);
-                                foreach (var key in curve.keys) {
-                                    if (key.value == 0)
-                                        meshOffPaths.Add(binding.path);
-                                    else if (key.value == 1)
-                                        meshOnPaths.Add(binding.path);
-                                }
-                            }
-                        }
-                    }
-                }
-                cache_FindAllPathsWhereMeshOrGameObjectHasOnlyOnAnimation.UnionWith(goOnPaths.Except(goOffPaths));
-                cache_FindAllPathsWhereMeshOrGameObjectHasOnlyOnAnimation.UnionWith(meshOnPaths.Except(meshOffPaths));
-            }
-            foreach (var path in cache_FindAllPathsWhereMeshOrGameObjectHasOnlyOnAnimation.ToList()) {
-                var t = GetTransformFromPath(path);
-                if (t == null || (t.GetComponent<MeshRenderer>() == null && t.GetComponent<SkinnedMeshRenderer>() == null))
-                    cache_FindAllPathsWhereMeshOrGameObjectHasOnlyOnAnimation.Remove(path);
-            }
-        }
-        return cache_FindAllPathsWhereMeshOrGameObjectHasOnlyOnAnimation;
-    }
-
-    private static bool AnimationCurvesHaveSameKeys(AnimationCurve a, AnimationCurve b)
-    {
-        if (ReferenceEquals(a, b))
-            return true;
-        if (a == null || b == null)
-            return false;
-        var aKeys = a.keys;
-        var bKeys = b.keys;
-        if (aKeys.Length != bKeys.Length)
-            return false;
-        for (int i = 0; i < aKeys.Length; ++i)
-        {
-            if (aKeys[i].value != bKeys[i].value || aKeys[i].time != bKeys[i].time)
-                return false;
-        }
-        return true;
-    }
-
-    private HashSet<string> cache_FindAllPathsWithIndependentRendererAndGameObjectToggles = null;
-    private HashSet<string> FindAllPathsWithIndependentRendererAndGameObjectToggles()
-    {
-        if (cache_FindAllPathsWithIndependentRendererAndGameObjectToggles != null)
-            return cache_FindAllPathsWithIndependentRendererAndGameObjectToggles;
-        var independentPaths = new HashSet<string>();
-        var pathsWithGameObjectToggle = new HashSet<string>();
-        var pathsWithRendererToggle = new HashSet<string>();
-        foreach (var clip in GetAllUsedAnimationClips())
-        {
-            var gameObjectBindings = new Dictionary<string, EditorCurveBinding>();
-            var rendererBindings = new Dictionary<string, EditorCurveBinding>();
-            foreach (var binding in AnimationUtility.GetCurveBindings(clip))
-            {
-                if (binding.type == typeof(GameObject) && binding.propertyName == "m_IsActive")
-                {
-                    gameObjectBindings[binding.path] = binding;
-                    pathsWithGameObjectToggle.Add(binding.path);
-                }
-                else if (typeof(Renderer).IsAssignableFrom(binding.type) && binding.propertyName == "m_Enabled")
-                {
-                    rendererBindings[binding.path] = binding;
-                    pathsWithRendererToggle.Add(binding.path);
-                }
-            }
-            foreach (var path in gameObjectBindings.Keys)
-            {
-                if (!rendererBindings.ContainsKey(path))
-                    independentPaths.Add(path);
-            }
-            foreach (var path in rendererBindings.Keys)
-            {
-                if (!gameObjectBindings.ContainsKey(path))
-                    independentPaths.Add(path);
-            }
-            foreach (var path in gameObjectBindings.Keys)
-            {
-                if (!rendererBindings.TryGetValue(path, out var rendererBinding))
-                    continue;
-                var gameObjectCurve = AnimationUtility.GetEditorCurve(clip, gameObjectBindings[path]);
-                var rendererCurve = AnimationUtility.GetEditorCurve(clip, rendererBinding);
-                if (!AnimationCurvesHaveSameKeys(gameObjectCurve, rendererCurve))
-                    independentPaths.Add(path);
-            }
-        }
-        independentPaths.RemoveWhere(path => !pathsWithGameObjectToggle.Contains(path) || !pathsWithRendererToggle.Contains(path));
-        return cache_FindAllPathsWithIndependentRendererAndGameObjectToggles = independentPaths;
-    }
-
-    private Dictionary<string, HashSet<AnimationClip>> cache_FindAllAnimationClipsAffectingRenderer = null;
-    private bool? cache_withNaNimation = null;
-    private Dictionary<(Renderer, Renderer), string> cache_RendererHaveSameAnimationCurves = null;
-    private string RenderersHaveSameAnimationCurves(Renderer a, Renderer b, bool withNaNimation)
-    {
-        if (cache_withNaNimation == null || cache_withNaNimation != withNaNimation)
-        {
-            cache_withNaNimation = withNaNimation;
-            cache_FindAllAnimationClipsAffectingRenderer = null;
-            cache_RendererHaveSameAnimationCurves = null;
-        }
-        cache_RendererHaveSameAnimationCurves ??= new();
-        var aPath = GetPathToRoot(a);
-        var bPath = GetPathToRoot(b);
-        if (aPath.CompareTo(bPath) > 0) {
-            (bPath, aPath) = (aPath, bPath);
-            (a, b) = (b, a);
-        }
-        if (cache_RendererHaveSameAnimationCurves.TryGetValue((a, b), out var cachedResult))
-            return cachedResult;
-        string FormatBinding(EditorCurveBinding binding)
-        {
-            return $"{binding.path}:{binding.propertyName}";
-        }
-        bool IsRelevantBindingForSkinnedMeshMerge(EditorCurveBinding binding) {
-            if(typeof(Renderer).IsAssignableFrom(binding.type) && binding.propertyName.StartsWithSimple("material.")) {
-                // ignore bindings for material properties that do not exist for any materials or material swaps on this renderer
-
-                Renderer renderer = GetTransformFromPath(binding.path)?.GetComponent<Renderer>();
-                if(renderer) {
-                    int materialSlotCount = renderer.sharedMaterials.Length;
-
-                    var swaps = FindAllMaterialSwapMaterials();
-                    string materialProperty = binding.propertyName.Substring("material.".Length).Split('.', 2)[0];
-
-                    bool propertyExists = false;
-
-                    for(int i = 0; i < materialSlotCount && !propertyExists; ++i) {
-                        // check the default materials
-                        if(renderer.sharedMaterials[i] != null && renderer.sharedMaterials[i].HasProperty(materialProperty)) {
-                            propertyExists = true;
-                            break;
-                        }
-
-                        // check the material swaps
-                        if(swaps.TryGetValue((binding.path, i), out var mats)) {
-                            foreach(Material mat in mats) {
-                                if(mat != null && mat.HasProperty(materialProperty)) {
-                                    propertyExists = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    // if the property does not exist, this binding is not relevant
-                    if(!propertyExists)
-                        return false;
-                }
-            }
-            
-            if (withNaNimation && CanUseNaNimationOnMesh(binding.path)) {
-                if (typeof(Renderer).IsAssignableFrom(binding.type))
-                    return !binding.propertyName.StartsWithSimple("blendShape.") && binding.propertyName != "m_Enabled";
-            } else {
-                if (typeof(Renderer).IsAssignableFrom(binding.type))
-                    return !binding.propertyName.StartsWithSimple("blendShape.");
-                if (binding.type == typeof(GameObject) && binding.propertyName == "m_IsActive")
-                    return true;
-            }
-            return false;
-        }
-        Dictionary<string, HashSet<AnimationClip>> FindAllAnimationClipsAffectingRenderer()
-        {
-            if (cache_FindAllAnimationClipsAffectingRenderer != null)
-                return cache_FindAllAnimationClipsAffectingRenderer;
-            cache_FindAllAnimationClipsAffectingRenderer = new Dictionary<string, HashSet<AnimationClip>>();
-            foreach (var clip in GetAllUsedAnimationClips())
-            {
-                foreach (var binding in AnimationUtility.GetCurveBindings(clip))
-                {
-                    if (IsRelevantBindingForSkinnedMeshMerge(binding))
-                    {
-                        if (!cache_FindAllAnimationClipsAffectingRenderer.TryGetValue(binding.path, out var clips))
-                        {
-                            cache_FindAllAnimationClipsAffectingRenderer[binding.path] = clips = new HashSet<AnimationClip>();
-                        }
-                        clips.Add(clip);
-                    }
-                }
-            }
-            return cache_FindAllAnimationClipsAffectingRenderer;
-        }
-        var aHasClips = FindAllAnimationClipsAffectingRenderer().TryGetValue(aPath, out var aClips);
-        var bHasClips = FindAllAnimationClipsAffectingRenderer().TryGetValue(bPath, out var bClips);
-        if (!aHasClips && !bHasClips)
-            return cache_RendererHaveSameAnimationCurves[(a, b)] = null;
-        var allClips = new HashSet<AnimationClip>();
-        if (aHasClips)
-            allClips.UnionWith(aClips);
-        if (bHasClips)
-            allClips.UnionWith(bClips);
-        foreach (var clip in allClips.OrderBy(c => c.name))
-        {
-            var bindings = AnimationUtility.GetCurveBindings(clip);
-            foreach (var binding in bindings)
-            {
-                if (!IsRelevantBindingForSkinnedMeshMerge(binding))
-                    continue;
-                var otherBinding = binding;
-                if (binding.path == aPath)
-                {
-                    otherBinding.path = bPath;
-                    if (!bindings.Contains(otherBinding))
-                        return cache_RendererHaveSameAnimationCurves[(a, b)] = $"Animation clip '{clip.name}' binding '{FormatBinding(binding)}' does not match";
-                }
-                else if (binding.path == bPath)
-                {
-                    otherBinding.path = aPath;
-                    if (!bindings.Contains(otherBinding))
-                        return cache_RendererHaveSameAnimationCurves[(a, b)] = $"Animation clip '{clip.name}' binding '{FormatBinding(binding)}' does not match";
-                }
-                else
-                {
-                    continue;
-                }
-                var curve = AnimationUtility.GetEditorCurve(clip, binding);
-                var otherCurve = AnimationUtility.GetEditorCurve(clip, otherBinding);
-                if (!AnimationCurvesHaveSameKeys(curve, otherCurve))
-                    return cache_RendererHaveSameAnimationCurves[(a, b)] = $"Animation clip '{clip.name}' binding '{FormatBinding(binding)}' does not match";
-            }
-        }
-        return cache_RendererHaveSameAnimationCurves[(a, b)] = null;
-    }
-
-    private static List<string> ColorPropertyComponents = new List<string> { ".r", ".g", ".b", ".a" };
-    private static List<string> VectorPropertyComponents = new List<string> { ".x", ".y", ".z", ".w" };
-    private Dictionary<string, HashSet<AnimationClip>> cache_AllAnimationClipsAffectingRendererMaterialProperties = null;
-    private Dictionary<(string a, string b), HashSet<string>> cache_FindSameAnimatedMaterialProperties = null;
-    private HashSet<string> FindSameAnimatedMaterialProperties(string aPath, string bPath)
-    {
-        if (cache_FindSameAnimatedMaterialProperties == null)
-            cache_FindSameAnimatedMaterialProperties = new Dictionary<(string a, string b), HashSet<string>>();
-        if (aPath.CompareTo(bPath) > 0) {
-            var temp = aPath;
-            aPath = bPath;
-            bPath = temp;
-        }
-        if (cache_FindSameAnimatedMaterialProperties.TryGetValue((aPath, bPath), out var cachedResult))
-            return cachedResult;
-        bool IsRelevantBinding(EditorCurveBinding binding) {
-            return typeof(Renderer).IsAssignableFrom(binding.type) && binding.propertyName.StartsWithSimple("material.");
-        }
-        if (cache_AllAnimationClipsAffectingRendererMaterialProperties == null) {
-            cache_AllAnimationClipsAffectingRendererMaterialProperties = new Dictionary<string, HashSet<AnimationClip>>();
-            foreach (var clip in GetAllUsedAnimationClips()) {
-                foreach (var binding in AnimationUtility.GetCurveBindings(clip)) {
-                    if (IsRelevantBinding(binding)) {
-                        if (!cache_AllAnimationClipsAffectingRendererMaterialProperties.TryGetValue(binding.path, out var clips)) {
-                            cache_AllAnimationClipsAffectingRendererMaterialProperties[binding.path] = clips = new HashSet<AnimationClip>();
-                        }
-                        clips.Add(clip);
-                    }
-                }
-            }
-        }
-        var allClips = new HashSet<AnimationClip>();
-        if (cache_AllAnimationClipsAffectingRendererMaterialProperties.TryGetValue(aPath, out var aClips))
-            allClips.UnionWith(aClips);
-        if (cache_AllAnimationClipsAffectingRendererMaterialProperties.TryGetValue(bPath, out var bClips))
-            allClips.UnionWith(bClips);
-        var result = new HashSet<string>();
-        foreach (var clip in allClips) {
-            var bindings = AnimationUtility.GetCurveBindings(clip);
-            foreach (var binding in bindings) {
-                if (IsRelevantBinding(binding) && (binding.path == aPath || binding.path == bPath)) {
-                    result.Add(binding.propertyName);
-                }
-            }
-        }
-        foreach (var clip in allClips) {
-            var bindings = AnimationUtility.GetCurveBindings(clip);
-            foreach (var binding in bindings) {
-                if (IsRelevantBinding(binding) && (binding.path == aPath || binding.path == bPath) && result.Contains(binding.propertyName)) {
-                    var otherBinding = binding;
-                    otherBinding.path = binding.path == aPath ? bPath : aPath;
-                    if (!bindings.Contains(otherBinding)) {
-                        result.Remove(binding.propertyName);
-                        continue;
-                    }
-                    var aKeys = AnimationUtility.GetEditorCurve(clip, binding).keys;
-                    var bKeys = AnimationUtility.GetEditorCurve(clip, otherBinding).keys;
-                    if (aKeys.Length != bKeys.Length) {
-                        result.Remove(binding.propertyName);
-                        continue;
-                    }
-                    for (int i = 0; i < aKeys.Length; ++i) {
-                        if (aKeys[i].value != bKeys[i].value || aKeys[i].time != bKeys[i].time) {
-                            result.Remove(binding.propertyName);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        var colorProperties = new HashSet<string>();
-        var vectorProperties = new HashSet<string>();
-        foreach (var property in result) {
-            if (ColorPropertyComponents.Any(c => property.EndsWith(c)))
-                colorProperties.Add(property.Substring(0, property.Length - 2));
-            else if (VectorPropertyComponents.Any(c => property.EndsWith(c)))
-                vectorProperties.Add(property.Substring(0, property.Length - 2));
-        }
-        foreach (var colorProperty in colorProperties) {
-            if (ColorPropertyComponents.All(c => result.Contains(colorProperty + c))) {
-                result.Add(colorProperty);
-            }
-            ColorPropertyComponents.ForEach(c => result.Remove(colorProperty + c));
-        }
-        foreach (var vectorProperty in vectorProperties) {
-            if (VectorPropertyComponents.All(c => result.Contains(vectorProperty + c))) {
-                result.Add(vectorProperty);
-            }
-            VectorPropertyComponents.ForEach(c => result.Remove(vectorProperty + c));
-        }
-        return cache_FindSameAnimatedMaterialProperties[(aPath, bPath)] = new HashSet<string>(result.Select(p => p.Substring("material.".Length)));
-    }
-
     private void AddAnimationPathChange((string path, string name, Type type) source, (string path, string name, Type type) target)
     {
         if (source == target)
             return;
         newAnimationPaths[source] = target;
-        if (MergeStaticMeshesAsSkinned && source.type == typeof(SkinnedMeshRenderer))
-        {
-            source.type = typeof(MeshRenderer);
-            newAnimationPaths[source] = target;
-        }
     }
 
-    private HashSet<SkinnedMeshRenderer> FindAllUnusedSkinnedMeshRenderers()
+    // Meshes are never merged, so every renderer with materials is its own group.
+    public List<List<Renderer>> FindPossibleSkinnedMeshMerges()
     {
-        var togglePaths = FindAllGameObjectTogglePaths();
-        var unused = new HashSet<SkinnedMeshRenderer>();
-        var skinnedMeshRenderers = GetRootTransform().GetComponentsInChildren<SkinnedMeshRenderer>(true);
-        var exclusions = GetAllExcludedTransforms();
-        foreach (var skinnedMeshRenderer in skinnedMeshRenderers)
-        {
-            if (skinnedMeshRenderer.gameObject.activeSelf)
-                continue;
-            if (togglePaths.Contains(GetPathToRoot(skinnedMeshRenderer)))
-                continue;
-            if (exclusions.Contains(skinnedMeshRenderer.transform))
-                continue;
-            unused.Add(skinnedMeshRenderer);
-        }
-        return unused;
-    }
-
-    private void DeleteAllUnusedSkinnedMeshRenderers()
-    {
-        // CombineSkinnedMeshes relies on unused SkinnedMeshRenderers getting deleted beforehand
-        // so we run this one when DeleteUnusedComponents is disabled
-        if (!(MergeSkinnedMeshes && !DeleteUnusedComponents))
-            return;
-        List<string> deletedPaths = new();
-        foreach (var skinnedMeshRenderer in FindAllUnusedSkinnedMeshRenderers())
-        {
-            var obj = skinnedMeshRenderer.gameObject;
-            deletedPaths.Add(GetPathToRoot(obj));
-            DestroyImmediate(skinnedMeshRenderer);
-            if (obj.transform.childCount == 0 && obj.GetNonNullComponents().Length == 1)
-                DestroyImmediate(obj);
-        }
-        if (deletedPaths.Count > 0)
-        {
-            LogToFile($"Deleting {deletedPaths.Count} unused SkinnedMeshRenderers:");
-            foreach (var path in deletedPaths)
-            {
-                LogToFile($"- {path}", 1);
-            }
-        }
-    }
-
-    public List<List<Renderer>> FindPossibleSkinnedMeshMerges(bool logMergeErrors = false)
-    {
-        using var perfScope = new Profiler.Section("FindPossibleSkinnedMeshMerges");
-        var av = GetAvatarDescriptor();
-        List<(string group, string path, string message)> mergeErrors = logMergeErrors ? new() : null;
         slotSwapMaterials = FindAllMaterialSwapMaterials();
-        var renderers = GetUsedComponentsInChildren<Renderer>()
-            .Select(r => (r, hasExtraMaterialSlots: HasExtraMaterialSlots(r), slashCount: GetPathToRoot(r).Count(c => c == '/'), path: GetPathToRoot(r)))
-            .OrderBy(t => t.hasExtraMaterialSlots ? 1 : 0)
-            .ThenBy(t => t.path == "Body" ? 0 : 1)
-            .ThenBy(t => t.r == av.VisemeSkinnedMesh ? 0 : 1)
-            .ThenBy(t => t.slashCount)
-            .ThenBy(t => t.path)
-            .Select(t => t.r).ToList();
-        var matchedSkinnedMeshes = new List<List<Renderer>>();
-        var unmergableRenderers = new List<Renderer>();
-        var exclusions = GetAllExcludedTransforms();
-        var penetrators = FindAllPenetrators();
-        foreach (var renderer in renderers) {
-            if (renderer.sharedMaterials.Length == 0)
-                continue;
-
-            if (exclusions.Contains(renderer.transform) ||
-                    !(renderer is SkinnedMeshRenderer || renderer is MeshRenderer) ||
-                    renderer.GetSharedMesh() == null ||
-                    penetrators.Contains(renderer)) {
-                unmergableRenderers.Add(renderer);
-                mergeErrors?.Add(("Unmergable renderers", GetPathToRoot(renderer), "Is excluded, not a MeshRenderer or SkinnedMeshRenderer, has no mesh, or is a penetrator"));
-                continue;
-            }
-
-            string basicMergeError = IsBasicCombinableRendererError(renderer);
-            if (basicMergeError != null) {
-                unmergableRenderers.Add(renderer);
-                mergeErrors?.Add(("Unmergable renderers", GetPathToRoot(renderer), basicMergeError));
-                continue;
-            }
-
-            bool foundMatch = false;
-            for (int index = 0; index < matchedSkinnedMeshes.Count; index++) {
-                var subList = matchedSkinnedMeshes[index];
-                string error = CanCombineRendererWith(subList, renderer);
-                if (error == null) {
-                    subList.Add(renderer);
-                    foundMatch = true;
-                    break;
-                }
-                mergeErrors?.Add(($"Group {index} '{GetPathToRoot(subList[0])}'", GetPathToRoot(renderer), error));
-            }
-            if (!foundMatch) {
-                matchedSkinnedMeshes.Add(new List<Renderer> { renderer });
-            }
-        }
-        matchedSkinnedMeshes.AddRange(unmergableRenderers.Select(r => new List<Renderer> { r }));
-        for (int i = 0; i < matchedSkinnedMeshes.Count && MergeStaticMeshesAsSkinned; i++)
-        {
-            var mergedMeshes = matchedSkinnedMeshes[i];
-            if (mergedMeshes.Count == 1)
-                continue;
-            var meshRenderers = mergedMeshes.Where(r => r is MeshRenderer).Cast<MeshRenderer>().ToList();
-            if (meshRenderers.Count == 0)
-                continue;
-            var mergedMaterialSlots = FindAllMergeAbleMaterials(mergedMeshes);
-            var meshRenderersWithMergedMaterials = new HashSet<MeshRenderer>(meshRenderers.Where(renderer =>
-                mergedMaterialSlots.Any(mergedSlots => mergedSlots.Any(slot => slot.renderer == renderer) && mergedSlots.Count > 1)));
-            var unhelpfullyMergedMeshRenderers = meshRenderers.Where(r => !meshRenderersWithMergedMaterials.Contains(r));
-            foreach (var meshRenderer in unhelpfullyMergedMeshRenderers)
-            {
-                if (mergedMeshes.Count == 1)
-                    break;
-                var newSubList = new List<Renderer> { meshRenderer };
-                matchedSkinnedMeshes.Add(newSubList);
-                mergedMeshes.Remove(meshRenderer);
-                mergeErrors?.Add(("Unhelpfully merged MeshRenderers", GetPathToRoot(meshRenderer), "No material merge found"));
-            }
-        }
-        if (logMergeErrors && mergeErrors.Count > 0)
-        {
-            var errorGroups = mergeErrors.GroupBy(e => e.group)
-                .OrderBy(g => g.Key == "Unmergable renderers" ? 0 : 1)
-                .ThenBy(g => g.Key.StartsWithSimple("Group ") ? int.Parse(g.Key.Split(' ')[1]) : int.MaxValue)
-                .ToList();
-            LogToFile($"Skinned mesh merge errors:");
-            foreach (var errorGroup in errorGroups)
-            {
-                LogToFile($"- {errorGroup.Key}:", 1);
-                var innerGroups = errorGroup.GroupBy(e => e.message).ToList();
-                foreach (var innerGroup in innerGroups)
-                {
-                    if (innerGroup.Count() == 1)
-                    {
-                        LogToFile($"- '{innerGroup.First().path}': {innerGroup.Key}", 2);
-                    }
-                    else
-                    {
-                        LogToFile($"- {innerGroup.Key}:", 2);
-                        foreach (var error in innerGroup)
-                        {
-                            LogToFile($"- '{error.path}'", 3);
-                        }
-                    }
-                }
-            }
-        }
-        matchedSkinnedMeshes = matchedSkinnedMeshes
-            .OrderBy(subList => subList[0] is SkinnedMeshRenderer || subList[0] is MeshRenderer ? 0 : 1)
-            .ThenByDescending(subList => subList.Count).ToList();
-        return matchedSkinnedMeshes;
+        return GetUsedComponentsInChildren<Renderer>()
+            .Where(r => r.sharedMaterials.Length > 0)
+            .OrderBy(r => r is SkinnedMeshRenderer || r is MeshRenderer ? 0 : 1)
+            .Select(r => new List<Renderer> { r })
+            .ToList();
     }
 
-    private HashSet<string> cache_TargetPathHasAnyMaterialSwap = null;
-    private bool TargetPathHasAnyMaterialSwap(string path)
+    private HashSet<string> cache_TargetPathHasAnyMaterialSwap = null;    private bool TargetPathHasAnyMaterialSwap(string path)
     {
         if (cache_TargetPathHasAnyMaterialSwap == null) {
             cache_TargetPathHasAnyMaterialSwap = new HashSet<string>();
@@ -1952,23 +1107,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             changed = true;
         }
         return FixAnimationBindingPath(newBinding, ref changed);
-    }
-
-    private AnimationCurve ReplaceZeroWithNaN(AnimationCurve curve)
-    {
-        var newCurve = new AnimationCurve();
-        for (int i = 0; i < curve.keys.Length; i++)
-        {
-            var key = curve.keys[i];
-            if (key.value == 0)
-            {
-                key.value = float.NaN;
-            }
-            newCurve.AddKey(key);
-        }
-        newCurve.preWrapMode = curve.preWrapMode;
-        newCurve.postWrapMode = curve.postWrapMode;
-        return newCurve;
     }
 
     private static readonly Dictionary<char, char> otherVectorOrColorComponent = new Dictionary<char, char> {
@@ -2041,20 +1179,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return false;
     }
 
-    private Material cache_DisabledMaterial = null;
-    private Material GetDisabledMaterial()
-    {
-        if (cache_DisabledMaterial == null)
-        {
-            cache_DisabledMaterial = new Material(Shader.Find(
-                HasCustomShaderSupport ? "Synthos/FxOptimizer/DisabledMaterial" : "VRChat/Mobile/Particles/Additive"));
-            cache_DisabledMaterial.name = "SynthosFxOptimizer_DisabledMaterial";
-            cache_DisabledMaterial.SetShaderPassEnabled("Always", false);
-            CreateUniqueAsset(cache_DisabledMaterial, "SynthosFxOptimizer_DisabledMaterial.mat");
-        }
-        return cache_DisabledMaterial;
-    }
-    
     private static readonly string DummyAnimationClipPrefix = "d4rkAO_DummyClip_";
         private Dictionary<(float length, float frameRate, bool isLooping), AnimationClip> cache_DummyAnimationClipBySettings = null;
         private static string GetDummyAnimationClipName((float length, float frameRate, bool isLooping) dummyClipInfo)
@@ -2111,56 +1235,13 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             var fixedBinding = FixAnimationBinding(binding, ref changed);
             bool isRendererToggleBinding = (typeof(Renderer).IsAssignableFrom(binding.type) && binding.propertyName == "m_Enabled")
                 || (binding.type == typeof(GameObject) && binding.propertyName == "m_IsActive");
-            if (isRendererToggleBinding
-                && materialSlotsToDisableWhenOriginalPathMeshIsDisabled.TryGetValue(binding.path, out var slotsToDisable))
-            {
-                foreach (var slot in slotsToDisable)
-                {
-                    var matSwapBinding = EditorCurveBinding.PPtrCurve(GetPathToRoot(slot.renderer), typeof(SkinnedMeshRenderer), $"m_Materials.Array.data[{slot.index}]");
-                    var keyframes = curve.keys.Select((key, i) => new ObjectReferenceKeyframe {
-                        time = key.time,
-                        value = key.value == 0 ? GetDisabledMaterial() : slot.material
-                    }).ToArray();
-                    SetObjectReferenceCurve(newClip, matSwapBinding, keyframes);
-                    changed = true;
-                    addedBindings.Add(matSwapBinding);
-                }
-            }
-            if (binding.type == typeof(GameObject) && binding.propertyName == "m_IsActive" && !pathsToDeleteGameObjectTogglesOn.Contains(binding.path))
+            if (binding.type == typeof(GameObject) && binding.propertyName == "m_IsActive")
             {
                 SetFloatCurve(newClip, FixAnimationBindingPath(binding, ref changed), curve);
             }
-            if (fixedBinding.propertyName.StartsWithSimple("NaNimation")) {
-                var shaderToggleInfo = fixedBinding.propertyName.Substring("NaNimation".Length);
-                var propertyNames = new string[] { "m_LocalScale.x", "m_LocalScale.y", "m_LocalScale.z" };
-                var NaNCurve = ReplaceZeroWithNaN(curve);
-                for (int i = 0; i < propertyNames.Length; i++) {
-                    fixedBinding.propertyName = propertyNames[i];
-                    SetFloatCurve(newClip, fixedBinding, NaNCurve);
-                    addedBindings.Add(fixedBinding);
-                }
-                if (shaderToggleInfo.Length > 0) {
-                    shaderToggleInfo = shaderToggleInfo.Substring(1);
-                    var semicolonIndex = shaderToggleInfo.IndexOf(';');
-                    fixedBinding.path = shaderToggleInfo.Substring(semicolonIndex + 1);
-                    fixedBinding.propertyName = $"material._IsActiveMesh{shaderToggleInfo.Substring(0, semicolonIndex)}";
-                    fixedBinding.type = typeof(SkinnedMeshRenderer);
-                    var b = FixAnimationBindingPath(fixedBinding, ref changed);
-                    SetFloatCurve(newClip, b, curve);
-                    addedBindings.Add(b);
-                }
-            } else {
-                if (fixedBinding != binding)
-                    changedBindings.Add((binding, fixedBinding));
-                SetFloatCurve(newClip, fixedBinding, curve);
-                if (fixedBinding.propertyName.StartsWithSimple($"material.SynthosFxOptimizer") && MergeSkinnedMeshesWithNaNimation) {
-                    var otherBinding = fixedBinding;
-                    var match = Regex.Match(fixedBinding.propertyName, @"material\.SynthosFxOptimizer(.+)_ArrayIndex\d+(\.[a-z])?");
-                    otherBinding.propertyName = $"material.{match.Groups[1].Value}{match.Groups[2].Value}";
-                    SetFloatCurve(newClip, otherBinding, curve);
-                    addedBindings.Add(otherBinding);
-                }
-            }
+            if (fixedBinding != binding)
+                changedBindings.Add((binding, fixedBinding));
+            SetFloatCurve(newClip, fixedBinding, curve);
             if (isRendererToggleBinding && physBonesToDisable.TryGetValue(binding.path, out var physBonePaths))
             {
                 var physBoneBinding = binding;
@@ -2747,6 +1828,29 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             {
                 errorMessages[i].Add($"default weight {layer.defaultWeight}");
             }
+            // The merged direct blend tree is an override layer without a mask, so additive or masked layers
+            // would change behavior once merged. Rotations blend as quaternions in blend trees, which breaks
+            // euler animations (spins, >180 degree turns), so those layers are kept as is too (same as VRCFury).
+            if (layer.blendingMode == AnimatorLayerBlendingMode.Additive)
+            {
+                errorMessages[i].Add($"layer is additive");
+                continue;
+            }
+            if (layer.avatarMask != null && fxLayerBindings[i].Any(b => b.type == typeof(Transform) || b.type == typeof(Animator)))
+            {
+                errorMessages[i].Add($"layer has an avatar mask and animates transforms or muscles");
+                continue;
+            }
+            var rotationBinding = stateMachine.EnumerateAllStates()
+                .Where(s => s.motion != null)
+                .SelectMany(s => s.motion.EnumerateAllClips())
+                .SelectMany(c => AnimationUtility.GetCurveBindings(c))
+                .FirstOrDefault(b => b.type == typeof(Transform) && (b.propertyName.StartsWith("localEulerAngles") || b.propertyName.StartsWith("m_LocalRotation") || b.propertyName.StartsWith("m_LocalEuler")));
+            if (rotationBinding.type != null)
+            {
+                errorMessages[i].Add($"{rotationBinding.path} animates transform rotation, which works differently in blend trees");
+                continue;
+            }
             var states = stateMachine.states;
             if (states.Length == 0)
             {
@@ -2761,10 +1865,9 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 }
                 if (state.motion is AnimationClip clip) {
                     if (state.timeParameterActive) {
-                        if (!CombineApproximateMotionTimeAnimations) {
-                            errorMessages[i].Add($"{state.name} has motion time and motion time combination is disabled");
-                            return false;
-                        }
+                        // motion time approximation is lossy, so motion time layers are never merged
+                        errorMessages[i].Add($"{state.name} has motion time");
+                        return false;
                     } else {
                         // check if all curves are constant
                         var bindings = AnimationUtility.GetCurveBindings(clip);
@@ -3066,13 +2169,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return cache_AnalyzeFXLayerMergeAbility = errorMessages;
     }
 
-    public bool IsMergeableFXLayer(int layerIndex)
-    {
-        var errors = AnalyzeFXLayerMergeAbility();
-        var nonErrors = new HashSet<string>() {"toggle", "motion time", "useless", "blend tree", "multi toggle"};
-        return layerIndex < errors.Count && errors[layerIndex].Count == 1 && nonErrors.Contains(errors[layerIndex][0]);
-    }
-
     private HashSet<int> cache_FindUselessFXLayers = null;
     public HashSet<int> FindUselessFXLayers()
     {
@@ -3200,35 +2296,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             }
         }
         return cache_GetAllUsedFXLayerAnimationClips = usedClips;
-    }
-
-    private bool? cache_DoesFXLayerUseWriteDefaults = null;
-    public bool DoesFXLayerUseWriteDefaults()
-    {
-        if (cache_DoesFXLayerUseWriteDefaults != null)
-            return cache_DoesFXLayerUseWriteDefaults.Value;
-        var fxLayer = GetFXLayer();
-        if (fxLayer == null)
-            return false;
-        var fxLayerLayers = GetFXLayerLayers();
-        for (int i = 0; i < fxLayerLayers.Length; i++)
-        {
-            var stateMachine = fxLayerLayers[i].stateMachine;
-            if (stateMachine == null || (OptimizeFXLayer && IsMergeableFXLayer(i)))
-                continue;
-            foreach (var state in stateMachine.EnumerateAllStates())
-            {
-                if (state.motion is BlendTree blendTree && blendTree.blendType == BlendTreeType.Direct)
-                    continue;
-                if (state.writeDefaultValues)
-                {
-                    cache_DoesFXLayerUseWriteDefaults = true;
-                    return true;
-                }
-            }
-        }
-        cache_DoesFXLayerUseWriteDefaults = false;
-        return false;
     }
 
     private void AddReferencePoseClips(HashSet<AnimationClip> clips)
@@ -3532,47 +2599,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             }
         }
         return cache_FindAllMaterialSwapMaterials = result;
-    }
-
-    private void OptimizeMaterialSwapMaterials()
-    {
-        bool didLogInitialMessage = false;
-        var exclusions = GetAllExcludedTransforms();
-        foreach (var entry in slotSwapMaterials)
-        {
-            var current = GetTransformFromPath(entry.Key.path);
-            if (exclusions.Contains(current))
-                continue;
-            int mergedMeshCount = 1;
-            int meshIndex = 0;
-            string targetPath = entry.Key.path;
-            if (oldPathToMergedPaths.TryGetValue(entry.Key.path, out var currentMergedMeshes))
-            {
-                mergedMeshCount = currentMergedMeshes.Count;
-                meshIndex = currentMergedMeshes.FindIndex(list => list.Contains(entry.Key.path));
-                targetPath = currentMergedMeshes[0][0];
-            }
-            if (!optimizedSlotSwapMaterials.TryGetValue(entry.Key, out var optimizedMaterials))
-            {
-                optimizedSlotSwapMaterials[entry.Key] = optimizedMaterials = new Dictionary<Material, Material>();
-            }
-            foreach (var material in entry.Value)
-            {
-                if (!optimizedMaterials.TryGetValue(material, out var optimizedMaterial))
-                {
-                    if (!didLogInitialMessage)
-                    {
-                        LogToFile("Optimizing material swap materials:");
-                        didLogInitialMessage = true;
-                    }
-                    using var _ = log.IndentScope();
-                    DisplayProgressBar("Optimizing swap material: " + material.name);
-                    var matWrapper = new List<List<(Material, List<string>)>>() { new List<(Material, List<string>)>() { (material, new List<string> { entry.Key.path } ) } };
-                    var mergedMeshIndexWrapper = new List<List<int>>() { new List<int>() { meshIndex } };
-                    optimizedMaterials[material] = CreateOptimizedMaterials(matWrapper, mergedMeshCount, targetPath, mergedMeshIndexWrapper)[0];
-                }
-            }
-        }
     }
 
     public int GetBaseLayerCount()
@@ -3922,43 +2948,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return true;
     }
 
-    private Dictionary<string, HashSet<string>> cache_FindAllAnimatedMaterialProperties;
-    public Dictionary<string, HashSet<string>> FindAllAnimatedMaterialProperties() {
-        if (cache_FindAllAnimatedMaterialProperties != null)
-            return cache_FindAllAnimatedMaterialProperties;
-        var map = new Dictionary<string, HashSet<string>>();
-        foreach (var binding in GetAllUsedCurveBindings()) {
-            if (!binding.propertyName.StartsWithSimple("material.") || !typeof(Renderer).IsAssignableFrom(binding.type))
-                continue;
-            if (!map.TryGetValue(binding.path, out var props)) {
-                map[binding.path] = (props = new HashSet<string>());
-            }
-            var propName = binding.propertyName.Substring(9);
-            if (!Regex.IsMatch(propName, @"^[#_a-zA-Z][#_a-zA-Z0-9]*(\.[rgbaxyzw])?$"))
-                continue;
-            if (propName.Length > 2 && propName[propName.Length - 2] == '.') {
-                props.Add(propName.Substring(0, propName.Length - 2));
-            }
-            props.Add(propName);
-        }
-        return cache_FindAllAnimatedMaterialProperties = map;
-    }
-
-    private HashSet<string> cache_FindAllRendererTogglePaths = null;
-    public HashSet<string> FindAllRendererTogglePaths()
-    {
-        if (cache_FindAllRendererTogglePaths != null)
-            return cache_FindAllRendererTogglePaths;
-        var togglePaths = new HashSet<string>();
-        foreach (var binding in GetAllUsedCurveBindings())
-        {
-            if (typeof(Renderer).IsAssignableFrom(binding.type) && binding.propertyName == "m_Enabled")
-                togglePaths.Add(binding.path);
-        }
-        togglePaths.UnionWith(FindAllGameObjectTogglePaths());
-        return cache_FindAllRendererTogglePaths = togglePaths;
-    }
-
     public HashSet<string> FindAllGameObjectTogglePaths()
     {
         AnalyzeTogglesAndExclusions();
@@ -3982,12 +2971,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         AnalyzeTogglesAndExclusions();
         return cache_GetAllExcludedTransforms;
     }
-    private Dictionary<string, string> GetSkinnedMeshMergeBarrierPaths()
-    {
-        AnalyzeTogglesAndExclusions();
-        return cache_GetSkinnedMeshMergeBarrierPaths;
-    }
-
     private HashSet<string> cache_FindAllGameObjectTogglePaths = null;
     private HashSet<Transform> cache_FindAllAlwaysDisabledGameObjects = null;
     private HashSet<Component> cache_FindAllUnusedComponents = null;
@@ -4064,15 +3047,12 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             .Where(t => t != null)
             .Select(t => (t, "Real Kiss System Mesh", true)));
         baseAutomaticExclusions.AddRange(FindAllPenetrators().Select(p => (p.transform, "Penetrator Mesh", true)));
-        if (!AllowMeshDataDuplication)
-        {
-            var threshold = AvatarOptimizerSettings.SharedMeshVertexCountExclusionThreshold;
-            baseAutomaticExclusions.AddRange(root.GetComponentsInChildren<SkinnedMeshRenderer>(true)
-                .Where(r => r.sharedMesh != null)
-                .GroupBy(r => r.sharedMesh)
-                .Where(g => g.Key.vertexCount > threshold && g.Count() > 1)
-                .SelectMany(g => g.Select(r => (r.transform, $"Shared Mesh '{g.Key.name}'", false))));
-        }
+        var threshold = AvatarOptimizerSettings.SharedMeshVertexCountExclusionThreshold;
+        baseAutomaticExclusions.AddRange(root.GetComponentsInChildren<SkinnedMeshRenderer>(true)
+            .Where(r => r.sharedMesh != null)
+            .GroupBy(r => r.sharedMesh)
+            .Where(g => g.Key.vertexCount > threshold && g.Count() > 1)
+            .SelectMany(g => g.Select(r => (r.transform, $"Shared Mesh '{g.Key.name}'", false))));
 
         HashSet<Transform> CalculateAlwaysDisabledGameObjects(HashSet<Transform> exclusions)
         {
@@ -4510,94 +3490,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return result;
     }
 
-    private HashSet<Material> cache_FindAllUsedMaterials = null;
-    public HashSet<Material> FindAllUsedMaterials()
-    {
-        if (cache_FindAllUsedMaterials != null)
-            return cache_FindAllUsedMaterials;
-        var materials = new HashSet<Material>();
-        foreach (var renderer in GetUsedComponentsInChildren<Renderer>())
-        {
-            materials.UnionWith(renderer.sharedMaterials.Where(m => m != null));
-        }
-        return cache_FindAllUsedMaterials = materials;
-    }
-
-    private Texture2DArray CombineTextures(List<Texture2D> textures)
-    {
-        Profiler.StartSection("CombineTextures()");
-        bool isLinear = IsTextureLinear(textures[0]);
-        var texArray = new Texture2DArray(textures[0].width, textures[0].height,
-            textures.Count, textures[0].format, textures[0].mipmapCount > 1, isLinear);
-        texArray.anisoLevel = textures[0].anisoLevel;
-        texArray.wrapMode = textures[0].wrapMode;
-        texArray.filterMode = textures[0].filterMode;
-        for (int i = 0; i < textures.Count; i++)
-        {
-            Graphics.CopyTexture(textures[i], 0, texArray, i);
-        }
-        Profiler.EndSection();
-        texArray.name = $"{texArray.width}x{texArray.height}_{texArray.format}_{(isLinear ? "linear" : "sRGB")}_{texArray.wrapMode}_{texArray.filterMode}_2DArray";
-        CreateUniqueAsset(texArray, $"{texArray.name}.asset");
-        using var _ = log.IndentScope();
-        LogToFile($"- '{texArray.name}' from {textures.Count} textures:");
-        foreach (var tex in textures)
-        {
-            LogToFile($"- '{tex.name}' at path '{AssetDatabase.GetAssetPath(tex)}'", 1);
-        }
-        return texArray;
-    }
-
-    private void SearchForTextureArrayCreation(List<List<Material>> sources)
-    {
-        foreach (var source in sources)
-        {
-            var parsedShader = ShaderAnalyzer.Parse(source[0]?.shader);
-            if (parsedShader == null || !parsedShader.parsedCorrectly)
-                continue;
-            var propertyTextureLists = new Dictionary<string, List<Texture2D>>();
-            foreach (var mat in source)
-            {
-                foreach (var prop in parsedShader.properties)
-                {
-                    if (!mat.HasProperty(prop.name))
-                        continue;
-                    if (prop.type != ParsedShader.Property.Type.Texture2D)
-                        continue;
-                    if (!propertyTextureLists.TryGetValue(prop.name, out var textureArray))
-                    {
-                        textureArray = new List<Texture2D>();
-                        propertyTextureLists[prop.name] = textureArray;
-                    }
-                    var tex = mat.GetTexture(prop.name);
-                    var tex2D = tex as Texture2D;
-                    int index = textureArray.IndexOf(tex2D);
-                    if (index == -1 && tex2D != null)
-                    {
-                        textureArray.Add(tex2D);
-                    }
-                }
-            }
-            foreach (var texArray in propertyTextureLists.Values.Where(a => a.Count > 1))
-            {
-                List<Texture2D> list = null;
-                foreach (var subList in textureArrayLists)
-                {
-                    if (CanCombineTexturesError(subList[0], texArray[0]) == null)
-                    {
-                        list = subList;
-                        break;
-                    }
-                }
-                if (list == null)
-                {
-                    textureArrayLists.Add(list = new List<Texture2D>());
-                }
-                list.AddRange(texArray.Except(list));
-            }
-        }
-    }
-
     private string GenerateUniqueName(string name, HashSet<string> usedNames)
     {
         if (usedNames.Add(name))
@@ -4622,547 +3514,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         if (renderer == null || renderer.sharedMaterials.Length == 0)
             return cache_GetFirstMaterialOnPath[path] = null;
         return cache_GetFirstMaterialOnPath[path] = renderer.sharedMaterials[0];
-    }
-
-    private Material[] CreateOptimizedMaterials(
-        List<List<(Material mat, List<string> paths)>> sources,
-        int meshToggleCount,
-        string path,
-        List<List<int>> mergedMeshIndices = null)
-    {
-        if (!(WritePropertiesAsStaticValues || sources.Any(list => list.Count > 1) || (meshToggleCount > 1 && MergeSkinnedMeshesWithShaderToggle)))
-        {
-            return sources.Select(list => list[0].mat).ToArray();
-        }
-        if (!fusedAnimatedMaterialProperties.TryGetValue(path, out var usedMaterialProps))
-            usedMaterialProps = new HashSet<string>();
-        if (mergedMeshIndices == null)
-            mergedMeshIndices = sources.Select(s => Enumerable.Range(0, meshToggleCount).ToList()).ToList();
-        HashSet<(string name, bool isVector)> defaultAnimatedProperties = null;
-        var animatedPropertyOnMeshID = new Dictionary<string, bool[]>();
-        oldPathToMergedPaths.TryGetValue(path, out var allOriginalMeshPaths);
-        var sameAnimatedProperties = GetSameAnimatedPropertiesOnMergedMesh(path);
-        var originalMeshPaths = sources.Select(l => l.SelectMany(t => t.paths).Distinct().ToList()).ToList();
-        if (allOriginalMeshPaths != null && (sources.Count != 1 || sources[0].Count != 1)) {
-            defaultAnimatedProperties = new HashSet<(string name, bool isVector)>();
-            for (int i = 0; i < allOriginalMeshPaths.Count; i++) {
-                Dictionary<string, Vector4> defaultValuesForCurrentPath = null;
-                Material defaultMaterialForCurrentPath = GetFirstMaterialOnPath(allOriginalMeshPaths[i][0]);
-                if (!animatedMaterialPropertyDefaultValues.TryGetValue(path, out defaultValuesForCurrentPath))
-                {
-                    defaultValuesForCurrentPath = new Dictionary<string, Vector4>();
-                    animatedMaterialPropertyDefaultValues[path] = defaultValuesForCurrentPath;
-                }
-                if (animatedMaterialProperties.TryGetValue(allOriginalMeshPaths[i][0], out var animatedProps)) {
-                    foreach (var prop in animatedProps) {
-                        string name = prop;
-                        bool isVector = name.EndsWith(".x") || name.EndsWith(".r");
-                        if (isVector) {
-                            name = name.Substring(0, name.Length - 2);
-                        } else if ((name.Length > 2 && name[name.Length - 2] == '.')
-                                || (!isVector && (animatedProps.Contains($"{name}.x") || animatedProps.Contains($"{name}.r")))) {
-                            continue;
-                        }
-                        if (sameAnimatedProperties.Contains(name)) {
-                            continue;
-                        }
-                        defaultAnimatedProperties.Add(($"SynthosFxOptimizer{name}_ArrayIndex{i}", isVector));
-                        defaultAnimatedProperties.Add((name, isVector));
-                        if (!animatedPropertyOnMeshID.TryGetValue(name, out var animatedOnMesh)) {
-                            animatedOnMesh = new bool[allOriginalMeshPaths.Count];
-                            animatedPropertyOnMeshID[name] = animatedOnMesh;
-                        }
-                        animatedOnMesh[i] = true;
-                        if (defaultMaterialForCurrentPath != null && defaultMaterialForCurrentPath.HasProperty(name)) 
-                        {
-                            defaultValuesForCurrentPath[$"SynthosFxOptimizer{name}_ArrayIndex{i}"] = isVector
-                                ? defaultMaterialForCurrentPath.GetVector(name)
-                                : new Vector4(defaultMaterialForCurrentPath.GetFloat(name), 0, 0, 0);
-                        }
-                    }
-                }
-                defaultAnimatedProperties.Add(($"_IsActiveMesh{i}", false));
-            }
-        }
-        if (!DoesFXLayerUseWriteDefaults())
-            animatedPropertyOnMeshID = null;
-        var materials = new Material[sources.Count];
-        var parsedShader = new ParsedShader[sources.Count];
-        var setShaderKeywords = new List<string>[sources.Count];
-        var replace = new Dictionary<string, string>[sources.Count];
-        var texturesToMerge = new HashSet<string>[sources.Count];
-        var propertyTextureArrayIndex = new Dictionary<string, int>[sources.Count];
-        var arrayPropertyValues = new Dictionary<string, (string type, List<string> values)>[sources.Count];
-        var texturesToCheckNull = new Dictionary<string, string>[sources.Count];
-        var animatedPropertyValues = new Dictionary<string, string>[sources.Count];
-        var poiUsedPropertyDefines = new Dictionary<string, bool>[sources.Count];
-        var stripShadowVariants = new bool[sources.Count];
-        for (int i = 0; i < sources.Count; i++)
-        {
-            var source = sources[i].Select(t => t.mat).ToList();
-            parsedShader[i] = ShaderAnalyzer.Parse(source[0]?.shader);
-            if (parsedShader[i] == null || !parsedShader[i].parsedCorrectly)
-            {
-                materials[i] = source[0];
-                continue;
-            }
-            
-            stripShadowVariants[i] = source[0].renderQueue > 2500;
-            texturesToMerge[i] = new HashSet<string>();
-            propertyTextureArrayIndex[i] = new Dictionary<string, int>();
-            arrayPropertyValues[i] = new Dictionary<string, (string type, List<string> values)>();
-            poiUsedPropertyDefines[i] = new Dictionary<string, bool>();
-            foreach (var mat in source)
-            {
-                foreach (var prop in parsedShader[i].properties)
-                {
-                    if (!mat.HasProperty(prop.name))
-                        continue;
-                    switch (prop.type)
-                    {
-                        case ParsedShader.Property.Type.Float:
-                            (string type, List<string> values) propertyArray;
-                            if (!arrayPropertyValues[i].TryGetValue(prop.name, out propertyArray))
-                            {
-                                propertyArray.type = "float";
-                                propertyArray.values = new List<string>();
-                                arrayPropertyValues[i][prop.name] = propertyArray;
-                            }
-                            var value = mat.GetFloat(prop.name);
-                            value = (prop.hasGammaTag) ? Mathf.GammaToLinearSpace(value) : value;
-                            propertyArray.values.Add($"{value}");
-                        break;
-                        case ParsedShader.Property.Type.Integer:
-                            if (!arrayPropertyValues[i].TryGetValue(prop.name, out propertyArray))
-                            {
-                                propertyArray.type = "int";
-                                propertyArray.values = new List<string>();
-                                arrayPropertyValues[i][prop.name] = propertyArray;
-                            }
-                            propertyArray.values.Add("" + mat.GetInteger(prop.name));
-                        break;
-                        case ParsedShader.Property.Type.Color:
-                        case ParsedShader.Property.Type.ColorHDR:
-                        case ParsedShader.Property.Type.Vector:
-                            if (!arrayPropertyValues[i].TryGetValue(prop.name, out propertyArray))
-                            {
-                                propertyArray.type = "float4";
-                                propertyArray.values = new List<string>();
-                                arrayPropertyValues[i][prop.name] = propertyArray;
-                            }
-                            var col = mat.GetColor(prop.name);
-                            col = (prop.type == ParsedShader.Property.Type.Color || prop.hasGammaTag) ? col.linear : col;
-                            propertyArray.values.Add($"float4({col.r}, {col.g}, {col.b}, {col.a})");
-                            break;
-                        case ParsedShader.Property.Type.Texture2D:
-                            if (!arrayPropertyValues[i].TryGetValue("arrayIndex" + prop.name, out var textureArray))
-                            {
-                                arrayPropertyValues[i]["arrayIndex" + prop.name] = ("float", new List<string>());
-                                arrayPropertyValues[i]["shouldSample" + prop.name] = ("bool", new List<string>());
-                            }
-                            var tex = mat.GetTexture(prop.name);
-                            var tex2D = tex as Texture2D;
-                            int index = 0;
-                            if (tex2D != null)
-                            {
-                                int texArrayIndex = textureArrayLists.FindIndex(l => l.Contains(tex2D));
-                                if (texArrayIndex != -1)
-                                {
-                                    index = textureArrayLists[texArrayIndex].IndexOf(tex2D);
-                                    texturesToMerge[i].Add(prop.name);
-                                    propertyTextureArrayIndex[i][prop.name] = texArrayIndex;
-                                }
-                            }
-                            arrayPropertyValues[i]["arrayIndex" + prop.name].values.Add("" + index);
-                            arrayPropertyValues[i]["shouldSample" + prop.name].values.Add((tex != null).ToString().ToLowerInvariant());
-                            break;
-                    }
-                }
-            }
-
-            replace[i] = new Dictionary<string, string>();
-            foreach (var tuple in arrayPropertyValues[i].ToList())
-            {
-                if (usedMaterialProps.Contains(tuple.Key) && !(meshToggleCount > 1))
-                {
-                    arrayPropertyValues[i].Remove(tuple.Key);
-                }
-                else if (tuple.Value.values.All(v => v == tuple.Value.values[0]))
-                {
-                    arrayPropertyValues[i].Remove(tuple.Key);
-                    replace[i][tuple.Key] = tuple.Value.values[0];
-                }
-            }
-            if (!WritePropertiesAsStaticValues)
-            {
-                foreach (string key in replace[i].Keys.Where(k => !k.StartsWithSimple("arrayIndex")).ToArray())
-                {
-                    replace[i].Remove(key);
-                }
-            }
-
-            texturesToCheckNull[i] = new Dictionary<string, string>();
-            foreach (var prop in parsedShader[i].properties)
-            {
-                if (prop.type == ParsedShader.Property.Type.Texture2D)
-                {
-                    if (arrayPropertyValues[i].ContainsKey("shouldSample" + prop.name))
-                    {
-                        texturesToCheckNull[i][prop.name] = prop.defaultValue;
-                    }
-                }
-                switch (prop.type)
-                {
-                    case ParsedShader.Property.Type.Texture2D:
-                    case ParsedShader.Property.Type.Texture2DArray:
-                    case ParsedShader.Property.Type.Texture3D:
-                    case ParsedShader.Property.Type.TextureCube:
-                    case ParsedShader.Property.Type.TextureCubeArray:
-                        bool isUsed = arrayPropertyValues[i].ContainsKey($"shouldSample{prop.name}")
-                            || source[0].GetTexture(prop.name) != null;
-                        poiUsedPropertyDefines[i][$"PROP{prop.name.ToUpper()}"] = isUsed;
-                        break;
-                }
-            }
-
-            animatedPropertyValues[i] = new Dictionary<string, string>();
-            if (meshToggleCount > 1) {
-                foreach (var propName in usedMaterialProps) {
-                    if (sameAnimatedProperties.Contains(propName)) {
-                        arrayPropertyValues[i].Remove(propName);
-                        replace[i].Remove(propName);
-                        continue;
-                    }
-                    if (originalMeshPaths != null) {
-                        bool skipProp = true;
-                        foreach (var originalPath in originalMeshPaths[i]) {
-                            if (animatedMaterialProperties.TryGetValue(originalPath, out var props)) {
-                                if (props.Contains(propName) || props.Contains(propName + ".x") || props.Contains(propName + ".r")) {
-                                    skipProp = false;
-                                    break;
-                                }
-                            }
-                        }
-                        if (skipProp)
-                            continue;
-                    }
-                    if (parsedShader[i].propertyTable.TryGetValue(propName, out var prop)) {
-                        string type = "float4";
-                        if (prop.type == ParsedShader.Property.Type.Float)
-                            type = "float";
-                        if (prop.type == ParsedShader.Property.Type.Integer)
-                            type = "int";
-                        animatedPropertyValues[i][propName] = type;
-                    }
-                }
-            }
-
-            setShaderKeywords[i] = parsedShader[i].shaderFeatureKeyWords.Where(k => source[0].IsKeywordEnabled(k)).ToList();
-        }
-
-        var optimizedShader = new ShaderOptimizer.OptimizedShader[sources.Count];
-        var basicMergedMeshPaths = allOriginalMeshPaths?.Select(list => string.Join(", ", list)).ToList();
-        Profiler.StartSection("ShaderOptimizer.Run()");
-        Parallel.For(0, sources.Count, i =>
-        {
-            if (parsedShader[i] != null && parsedShader[i].parsedCorrectly)
-            {
-                optimizedShader[i] = ShaderOptimizer.Run(
-                    parsedShader[i],
-                    replace[i],
-                    meshToggleCount,
-                    basicMergedMeshPaths,
-                    i == 0 ? defaultAnimatedProperties : null,
-                    mergedMeshIndices[i],
-                    arrayPropertyValues[i],
-                    texturesToCheckNull[i],
-                    texturesToMerge[i],
-                    animatedPropertyValues[i],
-                    setShaderKeywords[i],
-                    poiUsedPropertyDefines[i],
-                    stripShadowVariants[i],
-                    animatedPropertyOnMeshID
-                );
-            }
-        });
-        Profiler.EndSection();
-
-        LogToFile($"- Optimizing shaders for {sources.Count} material blobs on '{path}':");
-        for (int i = 0; i < sources.Count; i++)
-        {
-            using var _ = log.IndentScope();
-            var source = sources[i].Select(t => t.mat).ToList();
-            if (parsedShader[i] == null || !parsedShader[i].parsedCorrectly)
-            {
-                var reason = parsedShader[i] == null ? "parsedShader is null" : parsedShader[i].errorMessage;
-                LogToFile($"- Skipped optimization for material {(source[0] == null ? "null" : source[0].name)}: '{reason}'");
-                continue;
-            }
-
-            DisplayProgressBar($"Optimizing shader {source[0].shader.name} ({i + 1}/{sources.Count})");
-            var shaderName = optimizedShader[i].name;
-            var shaderFilePath = $"{trashBinPath}{shaderName}.shader";
-            if (!File.Exists(shaderFilePath))
-            {
-                foreach (var opt in optimizedShader[i].files)
-                {
-                    var filePath = shaderFilePath;
-                    if (opt.name != "Shader")
-                    {
-                        filePath = $"{trashBinPath}{opt.name}";
-                    }
-                    File.WriteAllLines(filePath, opt.lines);
-                    optimizedMaterialImportPaths.Add(filePath);
-                }
-            }
-            var optimizedMaterial = new Material(Shader.Find("Unlit/Texture"));
-            optimizedMaterial.shader = null;
-            optimizedMaterial.name = $"m_{source[0].name}_{shaderName[2..]}";
-            materials[i] = optimizedMaterial;
-            optimizedMaterials.Add((optimizedMaterial, source, optimizedShader[i]));
-            var arrayList = new List<(string name, Texture2DArray array)>();
-            foreach (var texArray in propertyTextureArrayIndex[i])
-            {
-                arrayList.Add((texArray.Key, textureArrays[texArray.Value]));
-            }
-            if (arrayList.Count > 0)
-            {
-                texArrayPropertiesToSet[optimizedMaterial] = arrayList;
-            }
-
-            LogToFile($"- {(source.Count > 1 ? $"{source.Count} source materials for " : "")}{optimizedMaterial.name} with shader {shaderName}");
-            for (int j = 0; j < source.Count && source.Count > 1; j++)
-            {
-                LogToFile($"- {source[j].name}", 1);
-            }
-        }
-        return materials;
-    }
-
-    private void SaveOptimizedMaterials()
-    {
-        Profiler.StartSection("AssetDatabase.ImportAsset()");
-        try
-        {
-            AssetDatabase.StartAssetEditing();
-            foreach(var importPath in optimizedMaterialImportPaths)
-            {
-                AssetDatabase.ImportAsset(importPath);
-            }
-        }
-        finally
-        {
-            AssetDatabase.StopAssetEditing();
-        }
-        Profiler.EndSection();
-
-        for (int i = 0; i < optimizedMaterials.Count; i++)
-        {
-            var mat = optimizedMaterials[i].target;
-            var sources = optimizedMaterials[i].sources;
-            var source = sources[0];
-            var optimizedShader = optimizedMaterials[i].optimizerResult;
-            DisplayProgressBar($"Loading optimized shader {mat.name}", 0.7f + 0.2f * (i / (float)optimizedMaterials.Count));
-            Profiler.StartSection("AssetDatabase.LoadAssetAtPath<Shader>()");
-            var shader = AssetDatabase.LoadAssetAtPath<Shader>($"{trashBinPath}{optimizedShader.name}.shader");
-            Profiler.StartNextSection("mat.shader = shader");
-            mat.shader = shader;
-            mat.renderQueue = source.renderQueue;
-            mat.enableInstancing = source.enableInstancing;
-            Profiler.StartNextSection("CopyMaterialProperties");
-            for (int j = 0; j < source.shader.passCount; j++)
-            {
-                var lightModeValue = source.shader.FindPassTagValue(j, new ShaderTagId("LightMode"));
-                if (!string.IsNullOrEmpty(lightModeValue.name))
-                {
-                    if (!source.GetShaderPassEnabled(lightModeValue.name))
-                    {
-                        mat.SetShaderPassEnabled(lightModeValue.name, false);
-                    }
-                }
-            }
-            var texArrayProperties = new HashSet<string>();
-            if (texArrayPropertiesToSet.TryGetValue(mat, out var texArrays))
-            {
-                foreach (var texArray in texArrays)
-                {
-                    string texArrayName = texArray.name;
-                    if (texArrayName == "_MainTex")
-                    {
-                        texArrayName = "_MainTexButNotQuiteSoThatUnityDoesntCry";
-                    }
-                    mat.SetTexture(texArrayName, texArray.array);
-                    mat.SetTextureOffset(texArrayName, source.GetTextureOffset(texArray.name));
-                    mat.SetTextureScale(texArrayName, source.GetTextureScale(texArray.name));
-                    texArrayProperties.Add(texArrayName);
-                }
-            }
-            foreach (var prop in optimizedShader.tex2DProperties)
-            {
-                if (!source.HasProperty(prop) || texArrayProperties.Contains(prop))
-                    continue;
-                var tex = sources.Select(m => m.GetTexture(prop)).FirstOrDefault(t => t != null);
-                mat.SetTexture(prop, tex);
-                mat.SetTextureOffset(prop, source.GetTextureOffset(prop));
-                mat.SetTextureScale(prop, source.GetTextureScale(prop));
-            }
-            foreach (var prop in optimizedShader.tex3DCubeProperties)
-            {
-                if (!source.HasProperty(prop))
-                    continue;
-                var tex = sources.Select(m => m.GetTexture(prop)).FirstOrDefault(t => t != null);
-                mat.SetTexture(prop, tex);
-            }
-            foreach (var prop in optimizedShader.floatProperties)
-            {
-                if (!source.HasProperty(prop))
-                    continue;
-                mat.SetFloat(prop, source.GetFloat(prop));
-            }
-            foreach (var prop in optimizedShader.colorProperties)
-            {
-                if (!source.HasProperty(prop))
-                    continue;
-                mat.SetColor(prop, source.GetColor(prop));
-            }
-            foreach (var prop in optimizedShader.integerProperties)
-            {
-                if (!source.HasProperty(prop))
-                    continue;
-                mat.SetInteger(prop, source.GetInteger(prop));
-            }
-            var vrcFallback = source.GetTag("VRCFallback", false, "not_set");
-            if (vrcFallback != "not_set")
-            {
-                mat.SetOverrideTag("VRCFallback", vrcFallback);
-            }
-            Profiler.EndSection();
-        }
-
-        var skinnedMeshRenderers = GetRootTransform().GetComponentsInChildren<SkinnedMeshRenderer>(true);
-        foreach (var meshRenderer in skinnedMeshRenderers)
-        {
-            var mesh = meshRenderer.sharedMesh;
-            if (mesh == null)
-                continue;
-
-            var props = new MaterialPropertyBlock();
-            meshRenderer.GetPropertyBlock(props);
-            int meshCount = props.GetInt("SynthosFxOptimizer_CombinedMeshCount");
-
-            if (MergeSkinnedMeshesWithShaderToggle
-                && fusedAnimatedMaterialProperties.TryGetValue(GetPathToRoot(meshRenderer), out var animatedProperties))
-            {
-                foreach (var mat in meshRenderer.sharedMaterials)
-                {
-                    if (mat == null)
-                        continue;
-                    foreach (var animPropName in animatedProperties)
-                    {
-                        var propName = animPropName;
-                        bool isVector = propName.EndsWith(".x") || propName.EndsWith(".r");
-                        if (isVector) {
-                            propName = propName.Substring(0, propName.Length - 2);
-                        } else if (propName[propName.Length - 2] == '.') {
-                            continue;
-                        } else if (animatedProperties.Contains($"{propName}.x") || animatedProperties.Contains($"{propName}.r")) {
-                            isVector = true;
-                        }
-                        for (int mID = 0; mID < meshCount; mID++)
-                        {
-                            var propArrayName = $"SynthosFxOptimizer{propName}_ArrayIndex{mID}";
-                            if (!mat.HasProperty(propArrayName))
-                                continue;
-                            var signal = DoesFXLayerUseWriteDefaults() ? 0.0f : float.NaN;
-                            if (isVector) {
-                                mat.SetVector(propArrayName, new Vector4(signal, signal, signal, signal));
-                            } else {
-                                mat.SetFloat(propArrayName, signal);
-                            }
-                        }
-                    }
-                    if (DoesFXLayerUseWriteDefaults() && animatedMaterialPropertyDefaultValues.TryGetValue(GetPathToRoot(meshRenderer), out var defaultValues))
-                    {
-                        foreach (var defaultProp in defaultValues)
-                        {
-                            if (mat.HasFloat(defaultProp.Key))
-                            {
-                                mat.SetFloat(defaultProp.Key, defaultProp.Value.x);
-                            }
-                            else if (mat.HasVector(defaultProp.Key))
-                            {
-                                mat.SetVector(defaultProp.Key, defaultProp.Value);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (meshCount > 1)
-            {
-                foreach (var mat in meshRenderer.sharedMaterials)
-                {
-                    if (mat == null)
-                        continue;
-                    for (int mID = 0; mID < meshCount; mID++)
-                    {
-                        var propName = $"_IsActiveMesh{mID}";
-                        mat.SetFloat(propName, props.GetFloat(propName));
-                    }
-                }
-            }
-
-            // clear property block to make editor testing match game behavior
-            meshRenderer.SetPropertyBlock(null);
-        }
-
-        foreach (var mat in optimizedMaterials.Select(o => o.target))
-        {
-            CreateUniqueAsset(mat, mat.name + ".mat");
-        }
-    }
-
-    private bool IsTextureLinear(Texture2D tex)
-    {
-        if (tex == null)
-            return false;
-        var importer = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(tex)) as TextureImporter;
-        if (importer == null)
-            return false;
-        return importer.sRGBTexture == false;
-    }
-
-    private string CanCombineTexturesError(Texture a, Texture b)
-    {
-        if (a == b)
-            return null;
-        if (a == null && b is Texture2D)
-            return null;
-        if (a is Texture2D && b == null)
-            return null;
-        if (a == null || b == null)
-            return "Textures are not of type Texture2D and not the same";
-        if (!(a is Texture2D) || !(b is Texture2D))
-            return a is Texture2D ? $"{b.name} is not a Texture2D" : $"{a.name} is not a Texture2D";
-        if (a.texelSize != b.texelSize)
-            return $"{a.name} and {b.name} have different texel sizes";
-        var a2D = a as Texture2D;
-        var b2D = b as Texture2D;
-        if (a2D.format != b2D.format)
-            return $"{a.name} and {b.name} have different texture formats";
-        if (a2D.format == TextureFormat.DXT1Crunched || a2D.format == TextureFormat.DXT5Crunched)
-            return $"{a.name} is using a crunched texture format which is not supported";
-        if (b2D.format == TextureFormat.DXT1Crunched || b2D.format == TextureFormat.DXT5Crunched)
-            return $"{b.name} is using a crunched texture format which is not supported";
-        if (a2D.mipmapCount != b2D.mipmapCount)
-            return $"{a.name} and {b.name} have different mipmap counts";
-        if (a2D.filterMode != b2D.filterMode)
-            return $"{a.name} and {b.name} have different filter modes";
-        if (a2D.wrapMode != b2D.wrapMode)
-            return $"{a.name} and {b.name} have different wrap modes";
-        if (IsTextureLinear(a2D) != IsTextureLinear(b2D))
-            return $"{a.name} and {b.name} have different color spaces";
-        return null;
     }
 
     public string CanCombineMaterialsError(List<MaterialSlot> list, MaterialSlot candidate)
@@ -5198,133 +3549,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         var listMaterials = list.Select(slot => slot.material).ToArray();
         var materialComparer = new MaterialAssetComparer();
         bool allTheSameAsCandidate = listMaterials.All(mat => materialComparer.Equals(mat, candidateMat));
-        if (allTheSameAsCandidate || !MergeDifferentPropertyMaterials)
-            return allTheSameAsCandidate ? null : "Not the same materials and merging different property materials is disabled";
-        if (UsesUV0ZW(candidate.renderer) || list.Any(slot => UsesUV0ZW(slot.renderer)))
-            return $"Renderer {GetPathToRoot(list.Concat(new[] { candidate }).First(slot => UsesUV0ZW(slot.renderer)).renderer)} uses uv0.zw";
-        if (list.Count > 1 && listMaterials.Any(mat => mat == candidateMat))
-            return null;
-        for (int j = 0; j < firstMat.shader.passCount; j++)
-        {
-            var lightModeValue = firstMat.shader.FindPassTagValue(j, new ShaderTagId("LightMode"));
-            if (!string.IsNullOrEmpty(lightModeValue.name))
-            {
-                if (firstMat.GetShaderPassEnabled(lightModeValue.name) != candidateMat.GetShaderPassEnabled(lightModeValue.name))
-                {
-                    return $"Shader pass enabled states for '{lightModeValue.name}' do not match";
-                }
-            }
-        }
-        var parsedShader = ShaderAnalyzer.Parse(candidateMat.shader);
-        if (parsedShader.parsedCorrectly == false)
-            return "Failed to parse shader correctly";
-        if (firstMat.renderQueue != candidateMat.renderQueue)
-            return "Render queues do not match";
-        if (firstMat.enableInstancing != candidateMat.enableInstancing)
-            return "Instancing settings do not match";
-        bool hasAnyMaterialVariant = listMaterials.Any(m => m.isVariant) || candidateMat.isVariant;
-        if (!hasAnyMaterialVariant && firstMat.GetTag("VRCFallback", false, "None") != candidateMat.GetTag("VRCFallback", false, "None"))
-            return "VRCFallback tags do not match";
-        foreach (var pass in parsedShader.passes)
-        {
-            if (pass.vertex == null)
-                return "Vertex shader is missing";
-            if (pass.hull != null || pass.domain != null)
-                return "Tessellation is unsupported for merging with different properties";
-            if (pass.fragment == null)
-                return "Fragment shader is missing";
-        }
-        foreach (var keyword in parsedShader.shaderFeatureKeyWords)
-        {
-            if (firstMat.IsKeywordEnabled(keyword) == candidateMat.IsKeywordEnabled(keyword))
-                continue;
-            if (parsedShader.keywordToProperty.TryGetValue(keyword, out var prop))
-                return $"Shader keyword '{keyword}' does not match\nKeyword is tied to property '{prop.name}' with display name '{prop.displayName}'";
-            return $"Shader keyword '{keyword}' does not match";
-        }
-        listMaterials = new HashSet<Material>(listMaterials).ToArray();
-        bool mergeTextures = MergeSameDimensionTextures && parsedShader.CanMergeTextures();
-        foreach (var prop in parsedShader.propertiesToCheckWhenMerging)
-        {
-            switch (prop.type)
-            {
-                case ParsedShader.Property.Type.Float:
-                    var candidateValue = candidateMat.GetFloat(prop.name);
-                    if (listMaterials[0].GetFloat(prop.name) != candidateValue)
-                        return $"Float property '{prop.name}' with display name '{prop.displayName}' does not match";
-                    break;
-                case ParsedShader.Property.Type.Integer:
-                    var candidateIntValue = candidateMat.GetInteger(prop.name);
-                    if (listMaterials[0].GetInteger(prop.name) != candidateIntValue)
-                        return $"Integer property '{prop.name}' with display name '{prop.displayName}' does not match";
-                    break;
-                case ParsedShader.Property.Type.Texture2D:
-                case ParsedShader.Property.Type.Texture2DArray:
-                case ParsedShader.Property.Type.Texture3D:
-                case ParsedShader.Property.Type.TextureCube:
-                case ParsedShader.Property.Type.TextureCubeArray:
-                    bool mergeTexture = mergeTextures && (prop.name != "_MainTex" || MergeMainTex);
-                    int propertyID = Shader.PropertyToID(prop.name);
-                    var cTex = candidateMat.GetTexture(propertyID);
-                    if (!mergeTexture && cTex != firstMat.GetTexture(propertyID))
-                        return $"Texture property '{prop.name}' with display name '{prop.displayName}' does not match";
-                    if (mergeTexture)
-                    {
-                        var error = listMaterials.Select(mat => CanCombineTexturesError(cTex, mat.GetTexture(propertyID))).FirstOrDefault(err => err != null);
-                        if (error != null)
-                            return $"Texture property '{prop.name}' with display name '{prop.displayName}' cannot be combined: {error}";
-                    }
-                    break;
-            }
-        }
-        return null;
-    }
-
-    private void OptimizeMaterialsOnNonSkinnedMeshes()
-    {
-        var meshRenderers = GetRootTransform().GetComponentsInChildren<MeshRenderer>(true);
-        var exclusions = GetAllExcludedTransforms();
-        meshRenderers = meshRenderers.Where(mr => !exclusions.Contains(mr.transform) && mr.GetSharedMesh() != null).ToArray();
-        if (meshRenderers.Length == 0)
-            return;
-        LogToFile($"Optimizing materials on {meshRenderers.Length} MeshRenderers:");
-        using var _ = log.IndentScope();
-        foreach (var meshRenderer in meshRenderers)
-        {
-            DisplayProgressBar($"Optimizing materials on {meshRenderer.name}");
-            var path = GetPathToRoot(meshRenderer);
-            var mats = meshRenderer.sharedMaterials.Select((material, index) => (material, index)).Where(m => m.material != null).ToList();
-            var alreadyOptimizedMaterials = new HashSet<Material>();
-            foreach (var (material, index) in mats)
-            {
-                if (slotSwapMaterials.TryGetValue((path, index), out var matList))
-                {
-                    alreadyOptimizedMaterials.UnionWith(matList);
-                }
-            }
-            var toOptimize = mats.Select(t => t.material).Where(m => !alreadyOptimizedMaterials.Contains(m)).Distinct().ToList();
-            var optimizeMaterialWrapper = toOptimize.Select(m => new List<(Material, List<string>)>() { (m, new List<string> { path } ) }).ToList();
-            var optimizedMaterialsList = CreateOptimizedMaterials(optimizeMaterialWrapper, 0, GetPathToRoot(meshRenderer));
-            var optimizedMaterials = toOptimize.Select((mat, index) => (mat, index))
-                .ToDictionary(t => t.mat, t => optimizedMaterialsList[t.index]);
-            var finalMaterials = new Material[meshRenderer.sharedMaterials.Length];
-            foreach (var (material, index) in mats)
-            {
-                if (!optimizedMaterials.TryGetValue(material, out var optimized))
-                {
-                    optimized = material;
-                    if (optimizedSlotSwapMaterials.TryGetValue((path, index), out var optimizedSwapMaterialMap))
-                    {
-                        if (!optimizedSwapMaterialMap.TryGetValue(material, out optimized))
-                        {
-                            optimized = material;
-                        }
-                    }
-                }
-                finalMaterials[index] = optimized;
-            }
-            meshRenderer.sharedMaterials = finalMaterials;
-        }
+        return allTheSameAsCandidate ? null : "Not the same materials";
     }
 
     public List<List<MaterialSlot>> FindAllMergeAbleMaterials(IEnumerable<Renderer> renderers)
@@ -5351,69 +3576,28 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 }
             }
         }
-        if (MergeSkinnedMeshesWithShaderToggle)
-        {
-            var indexOfFirstCompatibleShaderGroup = matched
-                .FindIndex(group => group[0].material != null && ShaderAnalyzer.Parse(group[0].material.shader).parsedCorrectly);
-            if (indexOfFirstCompatibleShaderGroup > 0)
-            {
-                var compatibleGroup = matched[indexOfFirstCompatibleShaderGroup];
-                matched.RemoveAt(indexOfFirstCompatibleShaderGroup);
-                matched.Insert(0, compatibleGroup);
-            }
-        }
         return matched;
+
     }
 
-    private void CreateTextureArrays()
-    {
-        textureArrayLists.Clear();
-        textureArrays.Clear();
-
-        var skinnedMeshRenderers = GetRootTransform().GetComponentsInChildren<SkinnedMeshRenderer>(true);
-        foreach (var meshRenderer in skinnedMeshRenderers)
-        {
-            var mesh = meshRenderer.sharedMesh;
-
-            if (mesh == null)
-                continue;
-
-            var matched = FindAllMergeAbleMaterials(new [] { meshRenderer });
-            
-            var matchedMaterials = matched.Select(list => list.Select(slot => slot.material).ToList()).ToList();
-            var uniqueMatchedMaterials = matchedMaterials.Select(mm => mm.Distinct().ToList()).ToList();
-
-            SearchForTextureArrayCreation(uniqueMatchedMaterials);
-        }
-
-        if (textureArrayLists.Count == 0)
-            return;
-        LogToFile($"Creating {textureArrayLists.Count} texture arrays:");
-        foreach (var textureList in textureArrayLists)
-        {
-            textureArrays.Add(CombineTextures(textureList));
-        }
-    }
-    
-    private void CombineAndOptimizeMaterials()
+    // Rebuilds each skinned mesh so material slots using the exact same material share one sub mesh,
+    // and trims unused vertex data (unreferenced vertices, all-white colors, unused uv components).
+    private void MergeIdenticalMaterialSlots()
     {
         var exclusions = GetAllExcludedTransforms();
         var skinnedMeshRenderers = GetRootTransform().GetComponentsInChildren<SkinnedMeshRenderer>(true)
             .Where(smr => !exclusions.Contains(smr.transform) && smr.sharedMesh != null).ToArray();
         if (skinnedMeshRenderers.Length == 0)
             return;
-        LogToFile($"Combining and optimizing materials on {skinnedMeshRenderers.Length} SkinnedMeshRenderers:");
+        LogToFile($"Merging identical material slots on {skinnedMeshRenderers.Length} SkinnedMeshRenderers:");
         using var _ = log.IndentScope();
         for (int meshRenderIndex = 0; meshRenderIndex < skinnedMeshRenderers.Length; meshRenderIndex++)
         {
             var meshRenderer = skinnedMeshRenderers[meshRenderIndex];
             var mesh = meshRenderer.sharedMesh;
             
-            DisplayProgressBar($"Combining materials on {meshRenderer.name} ({meshRenderIndex + 1}/{skinnedMeshRenderers.Length})");
+            DisplayProgressBar($"Merging material slots on {meshRenderer.name} ({meshRenderIndex + 1}/{skinnedMeshRenderers.Length})");
 
-            var props = new MaterialPropertyBlock();
-            meshRenderer.GetPropertyBlock(props);
-            int meshCount = props.GetInt("SynthosFxOptimizer_CombinedMeshCount");
             string meshPath = GetPathToRoot(meshRenderer);
 
             var matchedSlots = FindAllMergeAbleMaterials(new [] { meshRenderer });
@@ -5625,10 +3809,8 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             var uniqueMatchedMaterials = uniqueMatchedSlots.Select(list => list.Select(slot =>
                 (slot.material, allSlots.Where(slot2 => slot2.material == slot.material).Select(slot2 => GetOriginalSlot((meshPath, slot2.index)).path).ToList())
             ).ToList()).ToList();
-            var optimizedMaterials = CreateOptimizedMaterials(uniqueMatchedMaterials, meshCount > 1 ? meshCount : 0, meshPath, mergedMeshIndices);
-
-            bool swapMaterialsOnMeshDisable = (MergeSkinnedMeshesWithShaderToggle || MergeSkinnedMeshesWithNaNimation)
-                && mergedMeshIndices.SelectMany(l => l).Distinct().Count() > 1;
+            // slots only merge when they use the same material, so each group keeps its material as is
+            var optimizedMaterials = uniqueMatchedMaterials.Select(list => list[0].material).ToArray();
 
             for (int i = 0; i < uniqueMatchedMaterials.Count; i++)
             {
@@ -5645,14 +3827,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                     }
                     optimizedSwapMaterials[uniqueMatchedMaterials[i][0].material] = optimizedMaterials[i];
                 }
-                if (swapMaterialsOnMeshDisable && !slotSwapMaterials.ContainsKey(originalSlot) && mergedMeshIndices[i].Count == 1)
-                {
-                    if (!materialSlotsToDisableWhenOriginalPathMeshIsDisabled.TryGetValue(originalSlot.path, out var slotList))
-                    {
-                        materialSlotsToDisableWhenOriginalPathMeshIsDisabled[originalSlot.path] = slotList = new List<MaterialSlot>();
-                    }
-                    slotList.Add(new MaterialSlot(meshRenderer, i));
-                }
             }
 
             meshRenderer.sharedMaterials = optimizedMaterials;
@@ -5668,15 +3842,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         }
     }
 
-    private Dictionary<string, HashSet<string>> cache_SameAnimatedPropertiesOnMergedMesh = null;
-    private HashSet<string> GetSameAnimatedPropertiesOnMergedMesh(string path)
-    {
-        cache_SameAnimatedPropertiesOnMergedMesh ??= new Dictionary<string, HashSet<string>>();
-        if (cache_SameAnimatedPropertiesOnMergedMesh.TryGetValue(path, out var result))
-            return result;
-        return cache_SameAnimatedPropertiesOnMergedMesh[path] = new HashSet<string>();
-    }
-
     private void CombineSkinnedMeshes()
     {
         transformFromOldPath = new Dictionary<string, Transform>();
@@ -5685,15 +3850,13 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             transformFromOldPath[GetPathToRoot(t)] = t;
         }
         var avDescriptor = GetAvatarDescriptor();
-        var combinableMeshList = FindPossibleSkinnedMeshMerges(logMergeErrors: true);
+        var combinableMeshList = FindPossibleSkinnedMeshMerges();
         var (faceTrackingMeshes, faceTrackingNames) = GetFaceTrackingSetup();
         oldPathToMergedPaths.Clear();
         oldPathToMergedPath.Clear();
         var exclusions = GetAllExcludedTransforms();
         var movingTransforms = FindAllMovingTransforms();
         materialSlotRemap = new Dictionary<(string, int), (string, int)>();
-        animatedMaterialProperties = FindAllAnimatedMaterialProperties();
-        fusedAnimatedMaterialProperties = animatedMaterialProperties.ToDictionary(kvp => kvp.Key, kvp => new HashSet<string>(kvp.Value));
         var combinableSkinnedMeshList = combinableMeshList
             .Select(l => l.Select(m => m as SkinnedMeshRenderer).Where(m => m != null).ToList())
             .Where(l => l.Count > 0)
@@ -5729,39 +3892,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         for (int combinedMeshID = 0; combinedMeshID < combinableSkinnedMeshList.Length; combinedMeshID++)
         {
             var combinableSkinnedMeshes = combinableSkinnedMeshList[combinedMeshID];
-            var reparentedBoneReferences = new HashSet<(Transform sourceBone, Transform targetBone)>();
-            var differentParentToLocalMatrix = new HashSet<Transform>();
-
-            var basicMergedMeshes = new List<List<Renderer>>();
-            foreach (var renderer in combinableSkinnedMeshes)
-            {
-                bool foundMatch = false;
-                foreach (var subList in basicMergedMeshes)
-                {
-                    if (HasExtraMaterialSlots(renderer) && GetPathToRoot(subList[0]) == "Body" && MMDCompatibility)
-                        continue;
-                    if (CanCombineRendererWithBasicMerge(subList, renderer, false) == null)
-                    {
-                        subList.Add(renderer);
-                        foundMatch = true;
-                        break;
-                    }
-                }
-                if (!foundMatch)
-                {
-                    basicMergedMeshes.Add(new List<Renderer> { renderer });
-                }
-            }
-            for (int i = 0; i < basicMergedMeshes.Count; i++)
-            {
-                var subList = basicMergedMeshes[i];
-                if (HasExtraMaterialSlots(subList[^1]))
-                {
-                    basicMergedMeshes.RemoveAt(i);
-                    basicMergedMeshes.Add(subList);
-                    break;
-                }
-            }
+            var basicMergedMeshes = combinableSkinnedMeshes.Select(r => new List<Renderer> { r }).ToList();
 
             Profiler.StartSection("CombineMeshData");
 
@@ -5850,24 +3981,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             var targetRootBone = rootBoneGrouping[0].Key;
             var targetProbeAnchor = probeAnchorGrouping[0].Key;
 
-            // if NaNimation is enabled check if target root bone is Head bone or a child of Head and if so reassign it to the Hip bone
-            // we do this since NaNimation disables Update when Offscreen and the head gets scaled down locally
-            // without this fix the merged mesh would disappear locally
-            if (MergeSkinnedMeshesWithNaNimation && basicMergedMeshes.Count > 1)
-            {
-                if (animator != null && animator.isHuman)
-                {
-                    var headBone = animator.GetBoneTransform(HumanBodyBones.Head);
-                    if (headBone != null && (targetRootBone == headBone || targetRootBone.IsChildOf(headBone)))
-                    {
-                        targetRootBone = animator.GetBoneTransform(HumanBodyBones.Hips);
-                        if (targetRootBone == null)
-                        {
-                            targetRootBone = GetRootTransform();
-                        }
-                    }
-                }
-            }
 
             keepTransforms.Add(targetProbeAnchor);
             keepTransforms.Add(targetRootBone);
@@ -5994,50 +4107,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 targetBounds.Encapsulate(m.MultiplyPoint3x4(aabb.extents.Multiply(-1, 1, -1) + aabb.center));
                 targetBounds.Encapsulate(m.MultiplyPoint3x4(aabb.extents.Multiply(-1, -1, 1) + aabb.center));
                 targetBounds.Encapsulate(m.MultiplyPoint3x4(aabb.extents.Multiply(-1, -1, -1) + aabb.center));
-                Transform NaNimationBone = null;
-                int NaNimationBoneIndex = -1;
-                if (MergeSkinnedMeshesWithNaNimation && basicMergedMeshes.Count > 1
-                        && FindAllRendererTogglePaths().Contains(currentMeshPath)
-                        && CanUseNaNimationOnMesh(currentMeshPath))
-                {
-                    NaNimationBone = new GameObject("NaNimationBone").transform;
-                    var pathToRoot = currentMeshPath.Replace('/', '_');
-                    var siblingNames = new HashSet<string>(GetRootTransform().Cast<Transform>().Select(t => t.name));
-                    var nameCandidate = "NaNimation " + pathToRoot;
-                    int i = 1;
-                    while (siblingNames.Contains(nameCandidate))
-                    {
-                        nameCandidate = "NaNimation " + pathToRoot + " " + i++;
-                    }
-                    NaNimationBone.name = nameCandidate;
-                    NaNimationBone.parent = GetRootTransform();
-                    NaNimationBone.SetLocalPositionAndRotation(Vector3.zero, Quaternion.identity);
-                    NaNimationBone.localScale = Vector3.one;
-                    NaNimationBoneIndex = AddNewBone(NaNimationBone, NaNimationBone.worldToLocalMatrix);
-                    string key = "NaNimation";
-                    if (MergeSkinnedMeshesWithShaderToggle)
-                    {
-                        key += $";{blobMeshID};{newPath}";
-                    }
-                    AddAnimationPathChange((currentMeshPath, "m_IsActive", typeof(GameObject)),
-                        (GetPathToRoot(NaNimationBone), key, typeof(Transform)));
-                    AddAnimationPathChange((currentMeshPath, "m_Enabled", typeof(SkinnedMeshRenderer)),
-                        (GetPathToRoot(NaNimationBone), key, typeof(Transform)));
-                    var curveBinding = EditorCurveBinding.FloatCurve(newPath, typeof(SkinnedMeshRenderer), "m_UpdateWhenOffscreen");
-                    constantAnimatedValuesToAdd[curveBinding] = 0f;
-                    targetBounds.Encapsulate(toLocal.MultiplyPoint3x4(avDescriptor.ViewPosition + Vector3.forward * 0.3f + Vector3.up * 0.2f));
-                    targetBounds.Encapsulate(toLocal.MultiplyPoint3x4(avDescriptor.ViewPosition + Vector3.forward * 0.3f - Vector3.up * 0.2f));
-                    targetBounds.Encapsulate(toLocal.MultiplyPoint3x4(avDescriptor.ViewPosition + Vector3.forward * 0.3f + Vector3.right * 0.2f));
-                    targetBounds.Encapsulate(toLocal.MultiplyPoint3x4(avDescriptor.ViewPosition + Vector3.forward * 0.3f - Vector3.right * 0.2f));
-                }
-                else if (basicMergedMeshes.Count > 1 && MergeSkinnedMeshesWithShaderToggle)
-                {
-                    AddAnimationPathChange((currentMeshPath, "m_IsActive", typeof(GameObject)),
-                            (newPath, "material._IsActiveMesh" + blobMeshID, typeof(SkinnedMeshRenderer)));
-                    AddAnimationPathChange((currentMeshPath, "m_Enabled", typeof(SkinnedMeshRenderer)),
-                            (newPath, "material._IsActiveMesh" + blobMeshID, typeof(SkinnedMeshRenderer)));
-                }
-
                 if (sourceWeights.Length != sourceVertices.Length || bindPoseCount == 0)
                 {
                     var defaultWeight = new BoneWeight
@@ -6056,50 +4125,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                     sourceBindPoses = new Matrix4x4[1] { Matrix4x4.identity };
                     keepTransforms.Add(rootBone.transform);
                     bindPoseCount = 1;
-                }
-
-                var sourceBoneReparentMap = new Dictionary<int, int>();
-                var sourceBoneIndices = new Dictionary<Transform, int>();
-                for (int i = 0; i < bindPoseCount; i++)
-                {
-                    if (sourceBones[i] != null && !sourceBoneIndices.ContainsKey(sourceBones[i]))
-                    {
-                        sourceBoneIndices[sourceBones[i]] = i;
-                    }
-                }
-                int ParentBoneRemap(int boneIndex)
-                {
-                    if (!DeleteUnusedGameObjects)
-                        return boneIndex;
-                    if (sourceBoneReparentMap.TryGetValue(boneIndex, out int remappedBoneIndex))
-                        return remappedBoneIndex;
-                    if (boneIndex >= bindPoseCount || boneIndex < 0)
-                        return 0;
-                    var sourceBone = sourceBones[boneIndex];
-                    if (sourceBone == null || movingTransforms.Contains(sourceBone))
-                        return sourceBoneReparentMap[boneIndex] = boneIndex;
-                    var parentBone = sourceBone.parent;
-                    if (parentBone == null || !sourceBoneIndices.TryGetValue(parentBone, out int parentBoneIndex))
-                        return sourceBoneReparentMap[boneIndex] = boneIndex;
-                    var parentToChildViaBindPose = sourceBindPoses[boneIndex] * sourceBindPoses[parentBoneIndex].inverse;
-                    var parentToChildViaTransform = sourceBone.worldToLocalMatrix * sourceBones[parentBoneIndex].localToWorldMatrix;
-                    bool ApproximatelyEqual(Matrix4x4 a, Matrix4x4 b, float tolerance = 1e-4f)
-                    {
-                        for (int i = 0; i < 16; i++)
-                            if (Mathf.Abs(a[i] - b[i]) > tolerance)
-                                return false;
-                        return true;
-                    }
-                    if (!ApproximatelyEqual(parentToChildViaBindPose, parentToChildViaTransform))
-                    {
-                        differentParentToLocalMatrix.Add(sourceBone);
-                        return sourceBoneReparentMap[boneIndex] = boneIndex;
-                    }
-                    var remappedIndex = ParentBoneRemap(parentBoneIndex);
-                    if (sourceBones[remappedIndex] == null)
-                        return sourceBoneReparentMap[boneIndex] = boneIndex;
-                    reparentedBoneReferences.Add((sourceBone, sourceBones[remappedIndex]));
-                    return sourceBoneReparentMap[boneIndex] = remappedIndex;
                 }
 
                 var currentHasUvSet = new bool[8] {
@@ -6190,7 +4215,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                     int GetNewBoneIndexForCurrentMesh(int oldIndex)
                     {
                         oldIndex = oldIndex >= bindPoseCount ? 0 : Math.Max(0, oldIndex);
-                        oldIndex = ParentBoneRemap(oldIndex);
                         if (!bindPoseIDMap.TryGetValue(oldIndex, out int newIndex))
                         {
                             newIndex = GetNewBoneIndex(oldIndex, bindPoseMeshID, sourceBones[oldIndex], sourceBindPoses[oldIndex]);
@@ -6203,30 +4227,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                     boneWeight.boneIndex1 = GetNewBoneIndexForCurrentMesh(boneWeight.boneIndex1);
                     boneWeight.boneIndex2 = GetNewBoneIndexForCurrentMesh(boneWeight.boneIndex2);
                     boneWeight.boneIndex3 = GetNewBoneIndexForCurrentMesh(boneWeight.boneIndex3);
-                    if (NaNimationBoneIndex != -1)
-                    {
-                        var sum = boneWeight.weight0 + boneWeight.weight1 + boneWeight.weight2;
-                        sum = sum == 0 ? 1 : sum;
-                        boneWeight.weight0 /= sum;
-                        boneWeight.weight1 /= sum;
-                        boneWeight.weight2 /= sum;
-                        boneWeight.weight3 = 0;
-                        if (boneWeight.weight1 == 0)
-                        {
-                            boneWeight.boneIndex1 = NaNimationBoneIndex;
-                            boneWeight.weight1 = 1e-35f;
-                        }
-                        else if (boneWeight.weight2 == 0)
-                        {
-                            boneWeight.boneIndex2 = NaNimationBoneIndex;
-                            boneWeight.weight2 = 1e-35f;
-                        }
-                        else
-                        {
-                            boneWeight.boneIndex3 = NaNimationBoneIndex;
-                            boneWeight.weight3 = 1e-35f;
-                        }
-                    }
                     targetWeights.Add(boneWeight);
                     targetVertices.Add(sourceVertices[vertIndex]);
                     targetNormals.Add(sourceNormals[vertIndex]);
@@ -6561,60 +4561,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 }
             }
 
-            var sameAnimatedProperties = GetSameAnimatedPropertiesOnMergedMesh(newPath);
-            if (basicMergedMeshes.Count > 1 && MergeSkinnedMeshesWithShaderToggle) {
-                var pathA = GetPathToRoot(basicMergedMeshes[0][0]);
-                sameAnimatedProperties.UnionWith(FindSameAnimatedMaterialProperties(pathA, GetPathToRoot(basicMergedMeshes[1][0])));
-                for (int blobMeshID = 2; blobMeshID < basicMergedMeshes.Count; blobMeshID++) {
-                    sameAnimatedProperties.IntersectWith(FindSameAnimatedMaterialProperties(pathA, GetPathToRoot(basicMergedMeshes[blobMeshID][0])));
-                }
-            }
-
-            for (int blobMeshID = 0; blobMeshID < basicMergedMeshes.Count && basicMergedMeshes.Count > 1 && MergeSkinnedMeshesWithShaderToggle; blobMeshID++) {
-                var skinnedMesh = basicMergedMeshes[blobMeshID][0];
-                var oldPath = GetPathToRoot(skinnedMesh);
-                var properties = new MaterialPropertyBlock();
-                if (targetRenderer.HasPropertyBlock())
-                    targetRenderer.GetPropertyBlock(properties);
-                bool isActive = GetRendererDefaultEnabledState(skinnedMesh);
-                properties.SetFloat($"_IsActiveMesh{blobMeshID}", isActive ? 1f : 0f);
-                properties.SetInt("SynthosFxOptimizer_CombinedMeshCount", basicMergedMeshes.Count);
-                var animatedMaterialPropertiesToAdd = new List<string>();
-                if (animatedMaterialProperties.TryGetValue(oldPath, out var animatedProperties)) {
-                    foreach (var animPropName in animatedProperties) {
-                        var propName = animPropName;
-                        bool isVector = propName.EndsWith(".x");
-                        bool isColor = propName.EndsWith(".r");
-                        if (isVector || isColor) {
-                            propName = propName.Substring(0, propName.Length - 2);
-                        } else if (propName[propName.Length - 2] == '.') {
-                            continue;
-                        }
-                        if (sameAnimatedProperties.Contains(animPropName)) {
-                            continue;
-                        }
-                        for (int mID = 0; mID < basicMergedMeshes.Count; mID++) {
-                            string newPropertyName = $"material.SynthosFxOptimizer{propName}_ArrayIndex{mID}";
-                            string path = GetPathToRoot(basicMergedMeshes[mID][0]);
-                            var vectorEnd = isVector ? new [] { ".x", ".y", ".z", ".w" } : isColor ? new [] { ".r", ".g", ".b", ".a" } : new [] { "" };
-                            foreach (var component in vectorEnd) {
-                                AddAnimationPathChange(
-                                    (path, "material." + propName + component, typeof(SkinnedMeshRenderer)),
-                                    (newPath, newPropertyName + component, typeof(SkinnedMeshRenderer)));
-                            }
-                        }
-                        animatedMaterialPropertiesToAdd.Add(animPropName);
-                    }
-                }
-                if (animatedMaterialPropertiesToAdd.Count > 0) {
-                    if (!fusedAnimatedMaterialProperties.TryGetValue(newPath, out animatedProperties)) {
-                        fusedAnimatedMaterialProperties[newPath] = animatedProperties = new HashSet<string>();
-                    }
-                    animatedProperties.UnionWith(animatedMaterialPropertiesToAdd);
-                }
-                targetRenderer.SetPropertyBlock(properties);
-            }
-
             var materials = basicMergedMeshesList.SelectMany(r => r.sharedMaterials).ToArray();
             var originalMeshSlots = basicMergedMeshesList.SelectMany(r => MaterialSlot.GetAllSlotsFrom(r)).ToList();
             foreach (var renderer in basicMergedMeshesList)
@@ -6646,80 +4592,9 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 }
             }
 
-            if (basicMergedMeshes.Count > 1)
-            {
-                var go = targetRenderer.gameObject;
-                var children = go.transform.Cast<Transform>().ToList();
-                var componentsToMove = go.GetComponents<Component>().Where(c => !(c is Transform) && !(c is SkinnedMeshRenderer)).ToList();
-                if (children.Count > 0 || componentsToMove.Count > 0)
-                {
-                    var subContainer = new GameObject("d4rkAO_mergeTargetRoot");
-                    subContainer.transform.parent = go.transform;
-                    subContainer.transform.SetLocalPositionAndRotation(Vector3.zero, Quaternion.identity);
-                    subContainer.transform.localScale = Vector3.one;
-                    subContainer.SetActive(go.activeSelf);
-                    transformFromOldPath[GetPathToRoot(go)] = subContainer.transform;
-
-                    for (int i = 0; i < targetBones.Count; i++)
-                    {
-                        if (targetBones[i] == go.transform)
-                            targetBones[i] = subContainer.transform;
-                    }
-
-                    foreach (Transform child in children)
-                    {
-                        child.parent = subContainer.transform;
-                    }
-
-                    foreach (Component comp in componentsToMove)
-                    {
-                        UnityEditorInternal.ComponentUtility.CopyComponent(comp);
-                        UnityEditorInternal.ComponentUtility.PasteComponentAsNew(subContainer);
-                        DestroyImmediate(comp);
-                    }
-
-                    LogToFile($"- Created sub-container '{GetPathToRoot(subContainer.transform)}' and moved {children.Count} child transforms and {componentsToMove.Count} components.");
-                }
-                else
-                {
-                    pathsToDeleteGameObjectTogglesOn.Add(GetPathToRoot(go));
-                }
-
-                if (MergeSkinnedMeshesSeparatedByDefaultEnabledState && !GetRendererDefaultEnabledState(targetRenderer))
-                {
-                    targetRenderer.gameObject.SetActive(true);
-                    targetRenderer.enabled = false;
-                    var curveBinding = EditorCurveBinding.FloatCurve(GetPathToRoot(targetRenderer), typeof(SkinnedMeshRenderer), "m_Enabled");
-                    constantAnimatedValuesToAdd[curveBinding] = 1f;
-                }
-                else
-                {
-                    targetRenderer.gameObject.SetActive(true);
-                    targetRenderer.enabled = true;
-                }
-            }
             targetRenderer.bones = targetBones.ToArray();
             targetRenderer.localBounds = targetBounds;
 
-            List<string> destroyedGameObjects = new();
-            for (int meshID = 1; meshID < combinableSkinnedMeshes.Count; meshID++)
-            {
-                var obj = combinableSkinnedMeshes[meshID].gameObject;
-                DestroyImmediate(combinableSkinnedMeshes[meshID]);
-                if (!keepTransforms.Contains(obj.transform) && obj.transform.childCount == 0 && obj.GetNonNullComponents().Length == 1)
-                {
-                    destroyedGameObjects.Add(GetPathToRoot(obj.transform));
-                    DestroyImmediate(obj);
-                }
-            }
-            if (destroyedGameObjects.Count > 0)
-            {
-                LogToFile($"- Destroyed {destroyedGameObjects.Count} now-unused GameObjects after merging meshes:");
-                foreach (var path in destroyedGameObjects)
-                {
-                    LogToFile($"- {path}", 1);
-                }
-            }
             foreach (var receiver in GetMaterialContactReceiversUsingRenderer(targetRenderer))
             {
                 var targets = GetShaderTargetRenderers(receiver);
@@ -6732,30 +4607,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             AssetDatabase.SaveAssets();
             Profiler.EndSection();
 
-            if (differentParentToLocalMatrix.Count > 0)
-            {
-                LogToFile($"- Detected {differentParentToLocalMatrix.Count} bones with different parent-to-local matrices between bind pose and transform hierarchy:");
-                foreach (var bone in differentParentToLocalMatrix)
-                {
-                    LogToFile($"- {GetPathToRoot(bone)}", 1);
-                }
-            }
-
-            if (reparentedBoneReferences.Count > 0)
-            {
-                LogToFile($"- Reparented {reparentedBoneReferences.Count} skinned mesh bone references during merge:");
-                var groupedByTarget = reparentedBoneReferences.GroupBy(r => r.targetBone).ToList();
-                using (log.IndentScope())
-                foreach (var group in groupedByTarget)
-                {
-                    var parentPath = GetPathToRoot(group.Key);
-                    LogToFile($"- Reparented {group.Count()} bones to '{parentPath}':");
-                    foreach (var reparent in group)
-                    {
-                        LogToFile($"- {GetPathToRoot(reparent.sourceBone)[(parentPath.Length + 1)..]}", 1);
-                    }
-                }
-            }
         }
         GetRootTransform().SetPositionAndRotation(originalRootPosition, originalRootRotation);
 
@@ -6842,6 +4693,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             typeof(Rigidbody),
             typeof(AudioSource),
         };
+        componentsDeletedCount = list.Count;
         LogToFile($"Deleting {list.Count} unused components:");
         foreach (var component in list.Where(c => c != null && !typesToDeleteInSecondPass.Contains(c.GetType()))
                             .Concat(list.Where(c => c != null && typesToDeleteInSecondPass.Contains(c.GetType()))))
@@ -6851,203 +4703,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             LogToFile($"- {component.GetType().Name} at '{GetPathToRoot(component.transform)}'", 1);
             DestroyImmediate(component);
         }
-    }
-
-    private void DestroyUnusedGameObjects()
-    {
-        if (!DeleteUnusedGameObjects)
-            return;
-
-        var used = new HashSet<Transform>();
-
-        var movingTransforms = FindAllMovingTransforms();
-        used.UnionWith(movingTransforms);
-        used.UnionWith(movingTransforms.Select(t => t != null ? t.parent : null));
-
-        var root = GetRootTransform();
-        used.Add(root);
-        used.UnionWith(root.GetComponentsInChildren<Animator>(true)
-            .Select(a => a.transform.Find("Armature")).Where(t => t != null));
-        used.UnionWith(root.Cast<Transform>().Where(t => t.name.StartsWithSimple("NaNimation ")));
-
-        foreach (var contact in root.GetComponentsInChildren<ContactBase>(true))
-        {
-            used.Add(contact.GetRootTransform());
-            used.Add(contact.GetRootTransform().parent);
-        }
-
-        foreach (var physBone in root.GetComponentsInChildren<VRCPhysBoneBase>(true))
-        {
-            used.Add(physBone.GetRootTransform());
-            used.Add(physBone.GetRootTransform().parent);
-            used.UnionWith(physBone.ignoreTransforms);
-        }
-
-        foreach (var collider in root.GetComponentsInChildren<VRCPhysBoneColliderBase>(true))
-        {
-            used.Add(collider.GetRootTransform());
-            used.Add(collider.GetRootTransform().parent);
-        }
-
-        foreach (var c in root.GetComponentsInChildren<Component>(true).Where(c => c != null && !(c is Transform)))
-        {
-            used.Add(c.transform);
-            if (c.GetType().Name.Contains("Constraint"))
-            {
-                used.Add(c.transform.parent);
-            }
-            used.UnionWith(FindReferencedTransforms(c));
-        }
-
-        // the vrc finger colliders depend on their relative position to their parent, so we need to keep their parents around too
-        var avDescriptor = GetAvatarDescriptor();
-        var fingerColliders = new List<VRCAvatarDescriptor.ColliderConfig>() {
-            avDescriptor.collider_fingerIndexL,
-            avDescriptor.collider_fingerIndexR,
-            avDescriptor.collider_fingerMiddleL,
-            avDescriptor.collider_fingerMiddleR,
-            avDescriptor.collider_fingerRingL,
-            avDescriptor.collider_fingerRingR,
-            avDescriptor.collider_fingerLittleL,
-            avDescriptor.collider_fingerLittleR,
-        }.Select(c => c.transform).Where(t => t != null);
-        used.UnionWith(fingerColliders.Select(c => c.parent).Where(t => t != null));
-
-        used.UnionWith(FindAllGameObjectTogglePaths().Select(p => GetTransformFromPath(p)).Where(t => t != null));
-
-        foreach (var exclusion in GetAllExcludedTransforms())
-        {
-            if (exclusion == null)
-                continue;
-            used.Add(exclusion);
-            var current = exclusion;
-            while ((current = current.parent) != null)
-            {
-                used.Add(current);
-            }
-        }
-
-        var queue = new Queue<Transform>();
-        queue.Enqueue(root);
-
-        var deletedPaths = new List<string>();
-
-        while (queue.Count > 0)
-        {
-            var current = queue.Dequeue();
-            foreach (Transform child in current)
-            {
-                queue.Enqueue(child);
-            }
-            if (!used.Contains(current))
-            {
-                deletedPaths.Add(GetPathToRoot(current));
-                foreach (var child in current.Cast<Transform>().ToArray())
-                {
-                    child.parent = current.parent;
-                    child.name = $"{current.name}_{child.name}";
-                }
-                DestroyImmediate(current.gameObject);
-            }
-        }
-
-        if (deletedPaths.Count > 0)
-        {
-            LogToFile($"Deleted {deletedPaths.Count} unused GameObjects:");
-            foreach (var path in deletedPaths)
-            {
-                LogToFile($"- {path}", 1);
-            }
-        }
-    }
-
-    private void MoveRingFingerColliderToFeet()
-    {
-        if (!UseRingFingerAsFootCollider)
-            return;
-
-        VRCAvatarDescriptor.ColliderConfig CreateColliderRoot(VRCAvatarDescriptor.ColliderConfig collider, string side)
-        {
-            collider.state = VRCAvatarDescriptor.ColliderConfig.State.Custom;
-            collider.height -= collider.radius * 2f;
-            var parent = new GameObject($"{side}FootColliderRoot");
-            parent.transform.parent = collider.transform;
-            parent.transform.SetLocalPositionAndRotation(collider.position + collider.rotation * (-(collider.height * 0.5f) * Vector3.up), collider.rotation);
-            parent.transform.localScale = Vector3.one;
-            var leaf = new GameObject($"{side}FootColliderLeaf");
-            leaf.transform.parent = parent.transform;
-            leaf.transform.SetLocalPositionAndRotation(new Vector3(0, collider.height, 0), Quaternion.identity);
-            leaf.transform.localScale = Vector3.one;
-            collider.transform = leaf.transform;
-            return collider;
-        }
-
-        var av = GetAvatarDescriptor();
-        av.collider_fingerRingL = CreateColliderRoot(av.collider_footL, "left");
-        LogToFile($"Moved  left ring finger collider to '{GetPathToRoot(av.collider_fingerRingL.transform)}'");
-        av.collider_fingerRingR = CreateColliderRoot(av.collider_footR, "right");
-        LogToFile($"Moved right ring finger collider to '{GetPathToRoot(av.collider_fingerRingR.transform)}'");
-
-        // disable collider foldout in the inspector because it resets the collider transform
-        EditorPrefs.SetBool("VRCSDK3_AvatarDescriptorEditor3_CollidersFoldout", false);
-    }
-
-    private void ConvertStaticMeshesToSkinnedMeshes()
-    {
-        if (!MergeStaticMeshesAsSkinned)
-            return;
-        var staticMeshes = GetRootTransform().GetComponentsInChildren<MeshFilter>(true)
-            .Where(f => f.sharedMesh != null && f.gameObject.GetComponent<MeshRenderer>() != null)
-            .Where(f => f.gameObject.layer != 12)
-            .Select(f => f.gameObject).Distinct().ToList();
-        var meshesThatGetCombinedWithOtherMeshes = new HashSet<Renderer>(FindPossibleSkinnedMeshMerges().Where(l => l.Count > 1).SelectMany(l => l));
-        var meshesToConvert = staticMeshes.Where(obj => meshesThatGetCombinedWithOtherMeshes.Contains(obj.GetComponent<Renderer>())).ToList();
-        if (meshesToConvert.Count > 0)
-            LogToFile($"Converting {meshesToConvert.Count} static meshes to skinned meshes for merging:");
-
-        var materialContactTargets = new Dictionary<Renderer, List<(VRCContactReceiver receiver, int index)>>();
-        foreach (var receiver in FindAllMaterialContactReceivers())
-        {
-            var targets = GetShaderTargetRenderers(receiver);
-            for (int i = 0; i < targets.Length; i++)
-            {
-                if (targets[i] == null)
-                    continue;
-                if (!materialContactTargets.TryGetValue(targets[i], out var entries))
-                {
-                    entries = new List<(VRCContactReceiver, int)>();
-                    materialContactTargets[targets[i]] = entries;
-                }
-                entries.Add((receiver, i));
-            }
-        }
-
-        bool updatedContactTargets = false;
-        foreach (var obj in meshesToConvert)
-        {
-            var meshFilter = obj.GetComponent<MeshFilter>();
-            var meshRenderer = obj.GetComponent<MeshRenderer>();
-            bool isActive = meshRenderer.enabled;
-            var mats = meshRenderer.sharedMaterials;
-            var lightAnchor = meshRenderer.probeAnchor;
-            var mesh = meshFilter.sharedMesh;
-            var contactTargetEntries = materialContactTargets.GetValueOrDefault(meshRenderer);
-            DestroyImmediate(meshFilter);
-            var skinnedMeshRenderer = obj.AddComponent<SkinnedMeshRenderer>();
-            skinnedMeshRenderer.enabled = isActive;
-            skinnedMeshRenderer.sharedMesh = mesh;
-            skinnedMeshRenderer.sharedMaterials = mats;
-            skinnedMeshRenderer.probeAnchor = lightAnchor;
-            LogToFile($"- {GetPathToRoot(obj)}", 1);
-            if (contactTargetEntries != null)
-            {
-                updatedContactTargets = true;
-                foreach (var (receiver, index) in contactTargetEntries)
-                    GetShaderTargetRenderers(receiver)[index] = skinnedMeshRenderer;
-            }
-        }
-        if (updatedContactTargets)
-            cache_MaterialContactReceiversUsingRenderer = null;
     }
 
     public class MaterialAssetComparer : IEqualityComparer<Material> {
