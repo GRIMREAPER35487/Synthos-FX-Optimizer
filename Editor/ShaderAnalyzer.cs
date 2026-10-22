@@ -1,4 +1,4 @@
-﻿#if UNITY_EDITOR
+#if UNITY_EDITOR
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEditor;
@@ -1851,7 +1851,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     // all values but one are the same, so we can use a ternary operator
                     int index = values.IndexOf(seenOnce.First());
                     var secondValue = values.Count == 2 ? values[1 - index] : seenMultiple.First();
-                    output.Add($"{arrayProperty.Key} = d4rkAvatarOptimizer_MaterialID == {index} ? {seenOnce.First()} : {secondValue};");
+                    output.Add($"{arrayProperty.Key} = SynthosFxOptimizer_MaterialID == {index} ? {seenOnce.First()} : {secondValue};");
                 }
                 else if (values.Count <= 32 && seenOnce.Count + seenMultiple.Count == 2)
                 {
@@ -1864,12 +1864,12 @@ namespace d4rkpl4y3r.AvatarOptimizer
                         if (values[i] == firstValue)
                             bitField |= 1u << i;
                     }
-                    output.Add($"{arrayProperty.Key} = ((1u << d4rkAvatarOptimizer_MaterialID) & {bitField}) != 0 ? {firstValue} : {secondValue};");
+                    output.Add($"{arrayProperty.Key} = ((1u << SynthosFxOptimizer_MaterialID) & {bitField}) != 0 ? {firstValue} : {secondValue};");
                 }
                 else
                 {
                     // we need to index into the array
-                    output.Add($"{arrayProperty.Key} = d4rkAvatarOptimizerArray{arrayProperty.Key}[d4rkAvatarOptimizer_MaterialID];");
+                    output.Add($"{arrayProperty.Key} = SynthosFxOptimizerArray{arrayProperty.Key}[SynthosFxOptimizer_MaterialID];");
                 }
             }
         }
@@ -1903,8 +1903,8 @@ namespace d4rkpl4y3r.AvatarOptimizer
             {
                 string name = animatedProperty.Key;
                 string isAnimatedCheck = localMeshCount > 32
-                    ? $"d4rkAvatarOptimizer{name}_IsAnimated[d4rkAvatarOptimizer_MeshID]"
-                    : $"((1u << d4rkAvatarOptimizer_MeshID) & d4rkAvatarOptimizer{name}_IsAnimatedMask) != 0";
+                    ? $"SynthosFxOptimizer{name}_IsAnimated[SynthosFxOptimizer_MeshID]"
+                    : $"((1u << SynthosFxOptimizer_MeshID) & SynthosFxOptimizer{name}_IsAnimatedMask) != 0";
                 bool foundAnimatedPropertyOnMeshID = animatedPropertyOnMeshID.TryGetValue(name, out var onMeshID);
                 bool skipAnimatedCheck = foundAnimatedPropertyOnMeshID && mergedMeshIndices.All(i => onMeshID[i]);
                 if (localMeshCount > 1)
@@ -1913,12 +1913,12 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     output.Add("{");
                     foreach (int i in mergedMeshIndices)
                     {
-                        string currentIndex = $"d4rkAvatarOptimizer{name}_ArrayIndex{i}";
+                        string currentIndex = $"SynthosFxOptimizer{name}_ArrayIndex{i}";
                         if (!foundAnimatedPropertyOnMeshID)
                         {
-                            currentIndex = $"(isnan(asfloat(asuint({currentIndex}.x) ^ asuint(d4rkAvatarOptimizer_Zero))) ? {name} : {currentIndex})";
+                            currentIndex = $"(isnan(asfloat(asuint({currentIndex}.x) ^ asuint(SynthosFxOptimizer_Zero))) ? {name} : {currentIndex})";
                         }
-                        output.Add($"{name} = {i - mergedMeshIndices.First()} == d4rkAvatarOptimizer_MeshID ? "
+                        output.Add($"{name} = {i - mergedMeshIndices.First()} == SynthosFxOptimizer_MeshID ? "
                             + (skipAnimatedCheck || !foundAnimatedPropertyOnMeshID ? $"{currentIndex}" : $"({isAnimatedCheck} ? {currentIndex} : {name})")
                             + $" : {name};");
                     }
@@ -1926,15 +1926,15 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     output.Add($"#else");
                 }
                 string animatedValue = localMeshCount > 1
-                    ? $"{CBufferAliasArray[name].name}[{CBufferAliasArray[name].offset} + d4rkAvatarOptimizer_MeshID]"
-                    : $"d4rkAvatarOptimizer{name}_ArrayIndex{mergedMeshIndices.First()}";
+                    ? $"{CBufferAliasArray[name].name}[{CBufferAliasArray[name].offset} + SynthosFxOptimizer_MeshID]"
+                    : $"SynthosFxOptimizer{name}_ArrayIndex{mergedMeshIndices.First()}";
                 if (foundAnimatedPropertyOnMeshID)
                 {
                     output.Add($"{name} = {(skipAnimatedCheck ? animatedValue : $"{isAnimatedCheck} ? {animatedValue} : {name}")};");
                 }
                 else
                 {
-                    output.Add($"{name} = isnan(asfloat(asuint({animatedValue}.x) ^ asuint(d4rkAvatarOptimizer_Zero))) ? {name} : {animatedValue};");
+                    output.Add($"{name} = isnan(asfloat(asuint({animatedValue}.x) ^ asuint(SynthosFxOptimizer_Zero))) ? {name} : {animatedValue};");
                 }
                 if (localMeshCount > 1)
                 {
@@ -1948,7 +1948,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
             output.Add("struct " + name + "Wrapper");
             output.Add("{");
             if (addMeshMaterialID)
-                output.Add("uint d4rkAvatarOptimizer_MeshMaterialID : d4rkAvatarOptimizer_MeshMaterialID;");
+                output.Add("uint SynthosFxOptimizer_MeshMaterialID : SynthosFxOptimizer_MeshMaterialID;");
             foreach (var line in funcParams)
             {
                 if (line.StartsWithSimple("#"))
@@ -1962,7 +1962,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     if (isInput ^ match.Groups[2].Value != "out")
                         continue;
                     if (match.Groups[4].Value.ToLowerInvariant().Contains("vface"))
-                        output.Add("uint d4rkAvatarOptimizer_SV_IsFrontFace : SV_IsFrontFace;");
+                        output.Add("uint SynthosFxOptimizer_SV_IsFrontFace : SV_IsFrontFace;");
                     else
                         output.Add(match.Groups[3].Value + ";");
                 }
@@ -1990,7 +1990,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     var name = match.Groups[4].Value;
                     if (match.Groups[5].Value.ToLowerInvariant().Contains("vface"))
                     {
-                        output.Add($"{type} {name} = {wrapperName}.d4rkAvatarOptimizer_SV_IsFrontFace ? 1 : -1;");
+                        output.Add($"{type} {name} = {wrapperName}.SynthosFxOptimizer_SV_IsFrontFace ? 1 : -1;");
                     }
                     else if (isInput && match.Groups[2].Value != "out")
                     {
@@ -2083,14 +2083,14 @@ namespace d4rkpl4y3r.AvatarOptimizer
                         + (returnParam.semantic != null ? " : " + returnParam.semantic : "")).ToList();
                 AddParameterStructWrapper(funcParams, output, "vertexOutput", true, false);
                 AddParameterStructWrapper(funcParams, output, "vertexInput", false, true);
-                output.Add("vertexOutputWrapper d4rkAvatarOptimizer_vertexWithWrapper(vertexInputWrapper d4rkAvatarOptimizer_vertexInput)");
+                output.Add("vertexOutputWrapper SynthosFxOptimizer_vertexWithWrapper(vertexInputWrapper SynthosFxOptimizer_vertexInput)");
                 output.Add("{");
-                InitializeParameterFromWrapper(funcParams, output, "d4rkAvatarOptimizer_vertexInput", true);
-                output.Add($"d4rkAvatarOptimizer_MeshID = ((uint){inParam.name}.{vertexInUv0Member}.z >> 12) - {mergedMeshIndices.First()};");
-                output.Add($"d4rkAvatarOptimizer_MaterialID = 0xFFF & (uint){inParam.name}.{vertexInUv0Member}.z;");
-                output.Add("vertexOutputWrapper d4rkAvatarOptimizer_vertexOutput = (vertexOutputWrapper)0;");
-                output.Add("d4rkAvatarOptimizer_vertexOutput.d4rkAvatarOptimizer_MeshMaterialID = d4rkAvatarOptimizer_MaterialID | (d4rkAvatarOptimizer_MeshID << 16);");
-                nullReturn = "return d4rkAvatarOptimizer_vertexOutput;";
+                InitializeParameterFromWrapper(funcParams, output, "SynthosFxOptimizer_vertexInput", true);
+                output.Add($"SynthosFxOptimizer_MeshID = ((uint){inParam.name}.{vertexInUv0Member}.z >> 12) - {mergedMeshIndices.First()};");
+                output.Add($"SynthosFxOptimizer_MaterialID = 0xFFF & (uint){inParam.name}.{vertexInUv0Member}.z;");
+                output.Add("vertexOutputWrapper SynthosFxOptimizer_vertexOutput = (vertexOutputWrapper)0;");
+                output.Add("SynthosFxOptimizer_vertexOutput.SynthosFxOptimizer_MeshMaterialID = SynthosFxOptimizer_MaterialID | (SynthosFxOptimizer_MeshID << 16);");
+                nullReturn = "return SynthosFxOptimizer_vertexOutput;";
             }
             else
             {
@@ -2104,9 +2104,9 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     output.Add(line);
                 }
                 if (mergedMeshCount > 1 && !isEmptyPass)
-                    output.Add($"d4rkAvatarOptimizer_MeshID = ((uint){inParam.name}.{vertexInUv0Member}.z >> 12) - {mergedMeshIndices.First()};");
+                    output.Add($"SynthosFxOptimizer_MeshID = ((uint){inParam.name}.{vertexInUv0Member}.z >> 12) - {mergedMeshIndices.First()};");
                 if (arrayPropertyValues.Count > 0 && !isEmptyPass)
-                    output.Add($"d4rkAvatarOptimizer_MaterialID = 0xFFF & (uint){inParam.name}.{vertexInUv0Member}.z;");
+                    output.Add($"SynthosFxOptimizer_MaterialID = 0xFFF & (uint){inParam.name}.{vertexInUv0Member}.z;");
             }
             if (!isEmptyPass)
             {
@@ -2143,8 +2143,8 @@ namespace d4rkpl4y3r.AvatarOptimizer
                         if (isVoidReturn && needToPassOnMeshOrMaterialID)
                         {
                             output.Add("{");
-                            InitializeParameterFromWrapper(funcParams, output, "d4rkAvatarOptimizer_vertexOutput", false);
-                            output.Add("return d4rkAvatarOptimizer_vertexOutput;");
+                            InitializeParameterFromWrapper(funcParams, output, "SynthosFxOptimizer_vertexOutput", false);
+                            output.Add("return SynthosFxOptimizer_vertexOutput;");
                             output.Add("}");
                         }
                         break;
@@ -2161,8 +2161,8 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     output.Add("{");
                     if (!isVoidReturn)
                         output.Add($"returnWrappedStruct = {line["return".Length..].TrimStart()}");
-                    InitializeParameterFromWrapper(funcParams, output, "d4rkAvatarOptimizer_vertexOutput", false);
-                    output.Add("return d4rkAvatarOptimizer_vertexOutput;");
+                    InitializeParameterFromWrapper(funcParams, output, "SynthosFxOptimizer_vertexOutput", false);
+                    output.Add("return SynthosFxOptimizer_vertexOutput;");
                     output.Add("}");
                 }
                 else
@@ -2196,16 +2196,16 @@ namespace d4rkpl4y3r.AvatarOptimizer
             {
                 wrapperStructs.Add("struct " + inputWrapperName);
                 wrapperStructs.Add("{");
-                wrapperStructs.Add("uint d4rkAvatarOptimizer_MeshMaterialID : d4rkAvatarOptimizer_MeshMaterialID;");
-                wrapperStructs.Add(inParam.type + " d4rkAvatarOptimizer_geometryInput;");
+                wrapperStructs.Add("uint SynthosFxOptimizer_MeshMaterialID : SynthosFxOptimizer_MeshMaterialID;");
+                wrapperStructs.Add(inParam.type + " SynthosFxOptimizer_geometryInput;");
                 wrapperStructs.Add("};");
             }
             if (usesOutputWrapper)
             {
                 wrapperStructs.Add("struct " + outputWrapperName);
                 wrapperStructs.Add("{");
-                wrapperStructs.Add("uint d4rkAvatarOptimizer_MeshMaterialID : d4rkAvatarOptimizer_MeshMaterialID;");
-                wrapperStructs.Add(outParamType + " d4rkAvatarOptimizer_geometryOutput;");
+                wrapperStructs.Add("uint SynthosFxOptimizer_MeshMaterialID : SynthosFxOptimizer_MeshMaterialID;");
+                wrapperStructs.Add(outParamType + " SynthosFxOptimizer_geometryOutput;");
                 wrapperStructs.Add("};");
             }
             int insertIndex = output.FindLastIndex(s => !s.StartsWithSimple("#") && !s.StartsWithSimple("[")) + 1;
@@ -2218,7 +2218,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
             curlyBraceDepth++;
             string geometryType = inParam.arraySize == 1 ? "point" : inParam.arraySize == 2 ? "line" : "triangle";
             output.Add($"void {func.name}({geometryType} "
-                + (usesInputWrapper ? inputWrapperName + " d4rkAvatarOptimizer_inputWrapper" : inParam.type + " " + inParam.name)
+                + (usesInputWrapper ? inputWrapperName + " SynthosFxOptimizer_inputWrapper" : inParam.type + " " + inParam.name)
                 + $"[{inParam.arraySize}]"
                 + (inParam.semantic == null ? "" : $" : {inParam.semantic}")
                 + ", inout "
@@ -2230,12 +2230,12 @@ namespace d4rkpl4y3r.AvatarOptimizer
             output.Add("{");
             if (usesInputWrapper)
             {
-                output.Add("d4rkAvatarOptimizer_MaterialID = d4rkAvatarOptimizer_inputWrapper[0].d4rkAvatarOptimizer_MeshMaterialID & 0xFFFF;");
-                output.Add("d4rkAvatarOptimizer_MeshID = d4rkAvatarOptimizer_inputWrapper[0].d4rkAvatarOptimizer_MeshMaterialID >> 16;");
+                output.Add("SynthosFxOptimizer_MaterialID = SynthosFxOptimizer_inputWrapper[0].SynthosFxOptimizer_MeshMaterialID & 0xFFFF;");
+                output.Add("SynthosFxOptimizer_MeshID = SynthosFxOptimizer_inputWrapper[0].SynthosFxOptimizer_MeshMaterialID >> 16;");
                 output.Add(inParam.type + " " + inParam.name + "[" + inParam.arraySize + "];");
                 for (int i = 0; i < inParam.arraySize; i++)
                 {
-                    output.Add(inParam.name + "[" + i + "] = d4rkAvatarOptimizer_inputWrapper[" + i + "].d4rkAvatarOptimizer_geometryInput;");
+                    output.Add(inParam.name + "[" + i + "] = SynthosFxOptimizer_inputWrapper[" + i + "].SynthosFxOptimizer_geometryInput;");
                 }
             }
             InjectDummyCBufferUsage("return;");
@@ -2267,11 +2267,11 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 else if (line.Contains(outParam.name + ".Append("))
                 {
                     output.Add("{");
-                    output.Add(outputWrapperName + " d4rkAvatarOptimizer_geomOutput;");
-                    output.Add("d4rkAvatarOptimizer_geomOutput.d4rkAvatarOptimizer_geometryOutput = " + line.Substring(line.IndexOf(".Append(") + 7));
-                    output.Add("d4rkAvatarOptimizer_geomOutput.d4rkAvatarOptimizer_MeshMaterialID = "
-                        + "d4rkAvatarOptimizer_MaterialID | (d4rkAvatarOptimizer_MeshID << 16);");
-                    output.Add(outParam.name + ".Append(d4rkAvatarOptimizer_geomOutput);");
+                    output.Add(outputWrapperName + " SynthosFxOptimizer_geomOutput;");
+                    output.Add("SynthosFxOptimizer_geomOutput.SynthosFxOptimizer_geometryOutput = " + line.Substring(line.IndexOf(".Append(") + 7));
+                    output.Add("SynthosFxOptimizer_geomOutput.SynthosFxOptimizer_MeshMaterialID = "
+                        + "SynthosFxOptimizer_MaterialID | (SynthosFxOptimizer_MeshID << 16);");
+                    output.Add(outParam.name + ".Append(SynthosFxOptimizer_geomOutput);");
                     output.Add("}");
                 }
                 else
@@ -2294,17 +2294,17 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 var funcParams = ShaderAnalyzer.ParseFunctionParametersWithPreprocessorStatements(source, ref sourceLineIndex);
                 AddParameterStructWrapper(funcParams, output, "fragmentInput", true, true);
                 output.Add(func.parameters[0].type + " " + func.name + "(");
-                output.Add("fragmentInputWrapper d4rkAvatarOptimizer_fragmentInput");
+                output.Add("fragmentInputWrapper SynthosFxOptimizer_fragmentInput");
                 AddOutParametersToFunctionDeclaration(funcParams, output);
                 if (func.parameters[0].semantic != null)
                     output.Add(") : " + func.parameters[0].semantic);
                 else
                     output.Add(")");
                 output.Add("{");
-                InitializeParameterFromWrapper(funcParams, output, "d4rkAvatarOptimizer_fragmentInput", true);
+                InitializeParameterFromWrapper(funcParams, output, "SynthosFxOptimizer_fragmentInput", true);
                 InitializeOutputParameter(funcParams, output, true);
-                output.Add("d4rkAvatarOptimizer_MaterialID = d4rkAvatarOptimizer_fragmentInput.d4rkAvatarOptimizer_MeshMaterialID & 0xFFFF;");
-                output.Add("d4rkAvatarOptimizer_MeshID = d4rkAvatarOptimizer_fragmentInput.d4rkAvatarOptimizer_MeshMaterialID >> 16;");
+                output.Add("SynthosFxOptimizer_MaterialID = SynthosFxOptimizer_fragmentInput.SynthosFxOptimizer_MeshMaterialID & 0xFFFF;");
+                output.Add("SynthosFxOptimizer_MeshID = SynthosFxOptimizer_fragmentInput.SynthosFxOptimizer_MeshMaterialID >> 16;");
                 InjectDummyCBufferUsage(nullReturn);
                 InjectArrayPropertyInitialization();
                 InjectAnimatedPropertyInitialization();
@@ -2341,9 +2341,9 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 returnStatement = output[^1];
                 output.RemoveAt(output.Count - 1);
             }
-            output.Add("if (d4rkAvatarOptimizer_Zero)");
+            output.Add("if (SynthosFxOptimizer_Zero)");
             output.Add("{");
-            output.Add("float d4rkAvatarOptimizer_sum = 0;");
+            output.Add("float SynthosFxOptimizer_sum = 0;");
             foreach (var tex in texturesToCallSoTheSamplerDoesntDisappear)
             {
                 output.Add($"#ifdef DUMMY_USE_TEXTURE_TO_PRESERVE_SAMPLER_{tex}");
@@ -2351,15 +2351,15 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 if (texType == ParsedShader.Property.Type.TextureCube
                     || texType == ParsedShader.Property.Type.TextureCubeArray)
                 {
-                    output.Add($"d4rkAvatarOptimizer_sum += {tex}.Sample(sampler{tex}, 0).x;");
+                    output.Add($"SynthosFxOptimizer_sum += {tex}.Sample(sampler{tex}, 0).x;");
                 }
                 else
                 {
-                    output.Add($"d4rkAvatarOptimizer_sum += {tex}.Load(0).x;");
+                    output.Add($"SynthosFxOptimizer_sum += {tex}.Load(0).x;");
                 }
                 output.Add("#endif");
             }
-            output.Add($"if (d4rkAvatarOptimizer_sum) {dummyTextureNullReturn}");
+            output.Add($"if (SynthosFxOptimizer_sum) {dummyTextureNullReturn}");
             output.Add("}");
             if (returnStatement != null)
                 output.Add(returnStatement);
@@ -2459,16 +2459,16 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 return;
 
             var valuesToDummyUse = new Stack<string>();
-            valuesToDummyUse.Push("d4rkAvatarOptimizerAnimatedScalars[d4rkAvatarOptimizer_MeshID]");
+            valuesToDummyUse.Push("SynthosFxOptimizerAnimatedScalars[SynthosFxOptimizer_MeshID]");
             if (hasVectorCBufferAliasArray)
-                valuesToDummyUse.Push("d4rkAvatarOptimizerAnimatedVectors[d4rkAvatarOptimizer_MeshID].x");
+                valuesToDummyUse.Push("SynthosFxOptimizerAnimatedVectors[SynthosFxOptimizer_MeshID].x");
             for (int i = 0; i < mergedMeshIndices.Count; i++)
             {
                 valuesToDummyUse.Push($"_IsActiveMesh{mergedMeshIndices[i]}");
             }
             foreach (var animatedProperty in animatedPropertyValues.Keys)
             {
-                string propName = $"d4rkAvatarOptimizer{animatedProperty}_ArrayIndex";
+                string propName = $"SynthosFxOptimizer{animatedProperty}_ArrayIndex";
                 for (int i = 0; i < mergedMeshIndices.Count; i++)
                 {
                     valuesToDummyUse.Push($"{propName}{mergedMeshIndices[i]}.x");
@@ -2476,18 +2476,18 @@ namespace d4rkpl4y3r.AvatarOptimizer
             }
 
             output.Add("#if defined(SHADER_API_D3D11)");
-            output.Add("if (d4rkAvatarOptimizer_Zero)");
+            output.Add("if (SynthosFxOptimizer_Zero)");
             output.Add("{");
-            output.Add($"float d4rkAvatarOptimizer_val = {valuesToDummyUse.Pop()};");
+            output.Add($"float SynthosFxOptimizer_val = {valuesToDummyUse.Pop()};");
             while (valuesToDummyUse.Count >= 2)
             {
-                output.Add($"d4rkAvatarOptimizer_val += {valuesToDummyUse.Pop()} * {valuesToDummyUse.Pop()};");
+                output.Add($"SynthosFxOptimizer_val += {valuesToDummyUse.Pop()} * {valuesToDummyUse.Pop()};");
             }
             if (valuesToDummyUse.Count == 1)
             {
-                output.Add($"d4rkAvatarOptimizer_val += {valuesToDummyUse.Pop()};");
+                output.Add($"SynthosFxOptimizer_val += {valuesToDummyUse.Pop()};");
             }
-            output.Add("if (d4rkAvatarOptimizer_val) " + nullReturn);
+            output.Add("if (SynthosFxOptimizer_val) " + nullReturn);
             output.Add("}");
             output.Add("#endif");
         }
@@ -2499,13 +2499,13 @@ namespace d4rkpl4y3r.AvatarOptimizer
             if (localMeshCount > 1)
             {
                 output.Add("#if defined(SHADER_API_D3D11)");
-                output.Add($"if (0.5 > d4rkAvatarOptimizerAnimatedScalars[d4rkAvatarOptimizer_MeshID]) {nullReturn}");
+                output.Add($"if (0.5 > SynthosFxOptimizerAnimatedScalars[SynthosFxOptimizer_MeshID]) {nullReturn}");
                 output.Add("#else");
                 output.Add("{");
                 output.Add($"bool isActive = true;");
                 foreach (int i in mergedMeshIndices)
                 {
-                    output.Add($"isActive = {i - mergedMeshIndices.First()} == d4rkAvatarOptimizer_MeshID ? _IsActiveMesh{i} > 0.5 : isActive;");
+                    output.Add($"isActive = {i - mergedMeshIndices.First()} == SynthosFxOptimizer_MeshID ? _IsActiveMesh{i} > 0.5 : isActive;");
                 }
                 output.Add($"if (!isActive) {nullReturn}");
                 output.Add("}");
@@ -2585,7 +2585,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     scalarOutput.Add($"float _IsActiveMesh{i} : packoffset(c{i - mergedMeshIndices.First()});");
                     glOutput.Add($"float _IsActiveMesh{i};");
                 }
-                CBufferAliasArray.Add("_IsActiveMesh", ("d4rkAvatarOptimizerAnimatedScalars", 0));
+                CBufferAliasArray.Add("_IsActiveMesh", ("SynthosFxOptimizerAnimatedScalars", 0));
                 int currentScalarPackOffset = AllocateCBufferRegisters(0, usedScalarRegisters);
                 int currentVectorPackOffset = 0;
                 foreach (var animatedProperty in animatedPropertyValues)
@@ -2600,33 +2600,33 @@ namespace d4rkpl4y3r.AvatarOptimizer
                         hasVectorCBufferAliasArray = true;
                         currentOutput = vectorOutput;
                         currentPackOffset = currentVectorPackOffset = AllocateCBufferRegisters(currentVectorPackOffset, usedVectorRegisters);
-                        CBufferAliasArray.Add(name, ("d4rkAvatarOptimizerAnimatedVectors", currentPackOffset));
+                        CBufferAliasArray.Add(name, ("SynthosFxOptimizerAnimatedVectors", currentPackOffset));
                     }
                     else
                     {
                         type = "float";
                         currentPackOffset = currentScalarPackOffset = AllocateCBufferRegisters(currentScalarPackOffset, usedScalarRegisters);
-                        CBufferAliasArray.Add(name, ("d4rkAvatarOptimizerAnimatedScalars", currentPackOffset));
+                        CBufferAliasArray.Add(name, ("SynthosFxOptimizerAnimatedScalars", currentPackOffset));
                     }
                     foreach (int i in mergedMeshIndices)
                     {
-                        currentOutput.Add($"{type} d4rkAvatarOptimizer{name}_ArrayIndex{i} : packoffset(c{currentPackOffset + i - mergedMeshIndices.First()});");
-                        glOutput.Add($"{type} d4rkAvatarOptimizer{name}_ArrayIndex{i};");
+                        currentOutput.Add($"{type} SynthosFxOptimizer{name}_ArrayIndex{i} : packoffset(c{currentPackOffset + i - mergedMeshIndices.First()});");
+                        glOutput.Add($"{type} SynthosFxOptimizer{name}_ArrayIndex{i};");
                     }
                 }
                 output.Add("#if defined(SHADER_API_D3D11)");
-                output.Add("cbuffer d4rkAvatarOptimizerAnimatedScalars");
+                output.Add("cbuffer SynthosFxOptimizerAnimatedScalars");
                 output.Add("{");
                 if (localMeshCount > 1)
-                    output.Add($"float d4rkAvatarOptimizerAnimatedScalars[{usedScalarRegisters.Max() + 1}] : packoffset(c0);");
+                    output.Add($"float SynthosFxOptimizerAnimatedScalars[{usedScalarRegisters.Max() + 1}] : packoffset(c0);");
                 output.AddRange(scalarOutput);
                 output.Add("};");
                 if (hasVectorCBufferAliasArray)
                 {
-                    output.Add("cbuffer d4rkAvatarOptimizerAnimatedVectors");
+                    output.Add("cbuffer SynthosFxOptimizerAnimatedVectors");
                     output.Add("{");
                     if (localMeshCount > 1)
-                        output.Add($"float4 d4rkAvatarOptimizerAnimatedVectors[{usedVectorRegisters.Max() + 1}] : packoffset(c0);");
+                        output.Add($"float4 SynthosFxOptimizerAnimatedVectors[{usedVectorRegisters.Max() + 1}] : packoffset(c0);");
                     output.AddRange(vectorOutput);
                     output.Add("};");
                 }
@@ -2639,7 +2639,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     bool[] data = animatedPropertyMask.Value;
                     if (localMeshCount > 32)
                     {
-                        output.Add($"static const bool d4rkAvatarOptimizer{name}_IsAnimated[{localMeshCount}] = ");
+                        output.Add($"static const bool SynthosFxOptimizer{name}_IsAnimated[{localMeshCount}] = ");
                         output.Add("{");
                         for (int i = 0; i < localMeshCount; i++)
                         {
@@ -2655,7 +2655,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                             if (data[i + mergedMeshIndices.First()])
                                 bitField |= 1u << i;
                         }
-                        output.Add($"static const uint d4rkAvatarOptimizer{name}_IsAnimatedMask = {bitField};");
+                        output.Add($"static const uint SynthosFxOptimizer{name}_IsAnimatedMask = {bitField};");
                     }
                 }
             }
@@ -2679,9 +2679,9 @@ namespace d4rkpl4y3r.AvatarOptimizer
             {
                 output.Add($"#define {keyword} 1");
             }
-            output.Add("uniform float d4rkAvatarOptimizer_Zero;");
-            output.Add("static uint d4rkAvatarOptimizer_MaterialID = 0;");
-            output.Add("static uint d4rkAvatarOptimizer_MeshID = 0;");
+            output.Add("uniform float SynthosFxOptimizer_Zero;");
+            output.Add("static uint SynthosFxOptimizer_MaterialID = 0;");
+            output.Add("static uint SynthosFxOptimizer_MeshID = 0;");
             if (arrayPropertyValues.Count > 0)
             {
                 foreach (var arrayProperty in arrayPropertyValues)
@@ -2689,7 +2689,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     var (type, values) = arrayProperty.Value;
                     if (!ArrayPropertyNeedsIndexing(values))
                         continue;
-                    output.Add($"static const {type} d4rkAvatarOptimizerArray{arrayProperty.Key}[{values.Count}] = ");
+                    output.Add($"static const {type} SynthosFxOptimizerArray{arrayProperty.Key}[{values.Count}] = ");
                     output.Add("{");
                     for (int i = 0; i < values.Count; i++)
                     {
@@ -3153,7 +3153,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 switch (identifier) {
                     case "vertex":
                         if ((currentPass.geometry != null && mergedMeshCount > 1) || arrayPropertyValues.Count > 0 || animatedPropertyValues.Count > 0) {
-                            output.Add("#pragma vertex d4rkAvatarOptimizer_vertexWithWrapper");
+                            output.Add("#pragma vertex SynthosFxOptimizer_vertexWithWrapper");
                         } else {
                             output.Add(line);
                         }
@@ -3526,7 +3526,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                         }
                         foreach (int i in mergedMeshIndices)
                         {
-                            var fullPropertyName = $"d4rkAvatarOptimizer{prop.name}_ArrayIndex{i}";
+                            var fullPropertyName = $"SynthosFxOptimizer{prop.name}_ArrayIndex{i}";
                             propertyBlock.Add($"{tagString}{fullPropertyName}(\"{prop.name} {i}\", {type}) = {defaultValue}");
                             optimizedShader.AddProperty(fullPropertyName, type);
                             alreadyAdded.Add(fullPropertyName);
@@ -3547,7 +3547,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                         }
                         if (!parsedShader.propertyTable.TryGetValue(defaultAnimatedProperty.name, out var nativeProperty))
                         {
-                            var match = Regex.Match(defaultAnimatedProperty.name, @"d4rkAvatarOptimizer(\w+)_ArrayIndex(\d+)");
+                            var match = Regex.Match(defaultAnimatedProperty.name, @"SynthosFxOptimizer(\w+)_ArrayIndex(\d+)");
                             if (match.Success)
                             {
                                 parsedShader.propertyTable.TryGetValue(match.Groups[1].Value, out nativeProperty);

@@ -1,4 +1,4 @@
-﻿Shader "d4rkpl4y3r/Optimizer/DisabledMaterial"
+Shader "Synthos/FxOptimizer/DisabledMaterial"
 {
     SubShader
     {

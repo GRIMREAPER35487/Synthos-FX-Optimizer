@@ -1,4 +1,4 @@
-﻿#if UNITY_EDITOR
+#if UNITY_EDITOR
 using System;
 using UnityEngine;
 using UnityEditor;
@@ -27,31 +27,31 @@ namespace d4rkpl4y3r.AvatarOptimizer
 
         public bool OnPreprocessAvatar(GameObject avatarGameObject)
         {
-            var optimizers = avatarGameObject.GetComponentsInChildren<d4rkAvatarOptimizer>(includeInactive: false);
+            var optimizers = avatarGameObject.GetComponentsInChildren<SynthosFxOptimizer>(includeInactive: false);
             if (optimizers.Length > 1)
             {
-                Debug.LogError($"d4rkAvatarOptimizer skipping avatar {avatarGameObject.name} because multiple active optimizer components found on avatar. Remove duplicates before uploading.");
+                Debug.LogError($"SynthosFxOptimizer skipping avatar {avatarGameObject.name} because multiple active optimizer components found on avatar. Remove duplicates before uploading.");
                 return false;
             }
             var optimizer = optimizers.Length == 1 ? optimizers[0] : null;
             if (optimizer == null && AvatarOptimizerSettings.DoOptimizeWithDefaultSettingsWhenNoComponent)
             {
-                optimizer = avatarGameObject.AddComponent<d4rkAvatarOptimizer>();
+                optimizer = avatarGameObject.AddComponent<SynthosFxOptimizer>();
                 AvatarOptimizerSettings.ApplyDefaults(optimizer);
                 optimizer.ApplyAutoSettings();
                 optimizer.ApplyOnUpload = true;
-                Debug.Log($"d4rkAvatarOptimizer added default optimizer component to avatar {avatarGameObject.name} because \"Always Optimize on Upload\" is enabled.");
+                Debug.Log($"SynthosFxOptimizer added default optimizer component to avatar {avatarGameObject.name} because \"Always Optimize on Upload\" is enabled.");
             }
             if (optimizer == null)
             {
-                var hasDisabledOptimizerComponent = avatarGameObject.GetComponentsInChildren<d4rkAvatarOptimizer>(includeInactive: true).Any();
-                Debug.Log($"d4rkAvatarOptimizer skipping avatar {avatarGameObject.name} because "
+                var hasDisabledOptimizerComponent = avatarGameObject.GetComponentsInChildren<SynthosFxOptimizer>(includeInactive: true).Any();
+                Debug.Log($"SynthosFxOptimizer skipping avatar {avatarGameObject.name} because "
                     + (hasDisabledOptimizerComponent ? "optimizer component is disabled." : "no optimizer component found."));
                 return true;
             }
             if (!optimizer.ApplyOnUpload)
             {
-                Debug.Log($"d4rkAvatarOptimizer skipping avatar {avatarGameObject.name} because \"Apply On Upload\" is disabled on the optimizer component.");
+                Debug.Log($"SynthosFxOptimizer skipping avatar {avatarGameObject.name} because \"Apply On Upload\" is disabled on the optimizer component.");
                 return true;
             }
             try
@@ -60,17 +60,17 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 {
                     if (!AvatarOptimizerSettings.DoOptimizeInPlayMode)
                     {
-                        Debug.Log($"d4rkAvatarOptimizer skipping avatar {avatarGameObject.name} because \"Optimize in Play Mode\" is disabled.");
+                        Debug.Log($"SynthosFxOptimizer skipping avatar {avatarGameObject.name} because \"Optimize in Play Mode\" is disabled.");
                         return true;
                     }
                     else if (didRunInPlayMode)
                     {
-                        Debug.LogWarning($"d4rkAvatarOptimizer skipping avatar {avatarGameObject.name} because it has already optimized an avatar in this play session.");
+                        Debug.LogWarning($"SynthosFxOptimizer skipping avatar {avatarGameObject.name} because it has already optimized an avatar in this play session.");
                         return true;
                     }
                 }
                 didRunInPlayMode = Application.isPlaying;
-                Debug.Log($"d4rkAvatarOptimizer optimizing avatar {avatarGameObject.name}.");
+                Debug.Log($"SynthosFxOptimizer optimizing avatar {avatarGameObject.name}.");
                 optimizer.Optimize();
                 return true;
             }

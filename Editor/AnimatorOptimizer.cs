@@ -1,4 +1,4 @@
-﻿#if UNITY_EDITOR
+#if UNITY_EDITOR
 using System.Collections.Generic;
 using System.Linq;
 using d4rkpl4y3r.AvatarOptimizer.Extensions;
@@ -28,7 +28,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
         private List<(EditorCurveBinding binding, float value)> constantCurvesToAdd = new List<(EditorCurveBinding binding, float value)>();
         private bool isFxLayer = false;
         private List<(string msg, int indent)> logMessages;
-        private string mergedLayersParameter = "d4rkAvatarOptimizer_MergedLayers_Weight";
+        private string mergedLayersParameter = "SynthosFxOptimizer_MergedLayers_Weight";
         private bool deleteUnusedParameters = true;
         private HashSet<string> usedParameters = new HashSet<string>();
 
@@ -420,7 +420,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
             {
                 var layerMotion = new AnimationClip() {
                     hideFlags = HideFlags.None,
-                    name = "d4rkAvatarOptimizer_MergedLayers_Constants",
+                    name = "SynthosFxOptimizer_MergedLayers_Constants",
                     frameRate = 60,
                     wrapMode = WrapMode.Default
                 };
@@ -438,14 +438,14 @@ namespace d4rkpl4y3r.AvatarOptimizer
             directBlendTree.children = motions.ToArray();
             AddToAsset(directBlendTree);
             var state = new AnimatorState() {
-                name = "d4rkAvatarOptimizer_MergedLayers",
+                name = "SynthosFxOptimizer_MergedLayers",
                 writeDefaultValues = true,
                 hideFlags = HideFlags.HideInHierarchy,
                 motion = directBlendTree
             };
             AddToAsset(state);
             var stateMachine = new AnimatorStateMachine() {
-                name = "d4rkAvatarOptimizer_MergedLayers",
+                name = "SynthosFxOptimizer_MergedLayers",
                 hideFlags = HideFlags.HideInHierarchy,
                 states = new ChildAnimatorState[1] {
                     new() {
@@ -460,7 +460,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 blendingMode = AnimatorLayerBlendingMode.Override,
                 defaultWeight = 1f,
                 iKPass = false,
-                name = "d4rkAvatarOptimizer_MergedLayers",
+                name = "SynthosFxOptimizer_MergedLayers",
                 syncedLayerAffectsTiming = false,
                 stateMachine = stateMachine
             });

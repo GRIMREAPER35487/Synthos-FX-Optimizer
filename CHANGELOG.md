@@ -1,3 +1,14 @@
+# Synthos FX Optimizer
+## v1.0.0-beta.1
+First release of the trimmed fork, based on d4rkAvatarOptimizer v4.7.0-beta.2.
+### Changes
+* Renamed to Synthos FX Optimizer (`com.synthos.fx-optimizer`) with new asset GUIDs, so it can be installed next to d4rkAvatarOptimizer.
+* Only FX layer merging and cleanup remain: Optimize FX Layer, Delete Unused Animator Parameters, Disable Phys Bones When Unused, Merge Same Ratio Blend Shapes, MMD Compatibility and Delete Unused Components.
+* Permanently disabled: mesh & material merging, shader toggles, NaNimation, static property writing, texture merging, motion time approximation, Delete Unused GameObjects and Use Ring Finger as Foot Collider.
+* Removed Create Optimized Copy, the Texture Compression Analyzer, Why No Material Merge, presets and the related debug foldouts.
+* Material contact receivers are read via reflection so the package compiles on VRChat SDKs without material contacts (e.g. 3.10.5).
+
+# d4rkAvatarOptimizer (upstream history)
 ## v4.7.0-beta.2
 ### Changes
 * Add `//UNITY_SHADER_NO_UPGRADE` to generated .shader & .cginc files to improve import times

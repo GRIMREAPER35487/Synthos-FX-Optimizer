@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
@@ -67,7 +67,7 @@ namespace d4rkpl4y3r.AvatarOptimizer.Util
                 return new List<string>();
             long totalTime = DateTime.Now.Ticks - lastReset;
             var result = new List<string>();
-            result.Add(string.Format("d4rkAvatarOptimizer Total Time: {0:N3}s", new TimeSpan(totalTime).TotalSeconds));
+            result.Add(string.Format("SynthosFxOptimizer Total Time: {0:N3}s", new TimeSpan(totalTime).TotalSeconds));
             long unknownTime = totalTime - timeUsed.Values.Sum();
             timeUsed["unknown"] = unknownTime;
             double sum = timeUsed.Values.Sum();

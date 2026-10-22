@@ -1,22 +1,20 @@
 {
-  "name": "d4rkpl4y3r.d4rkavataroptimizer",
-  "displayName": "d4rkAvatarOptimizer",
-  "version": "4.7.0-beta.2",
+  "name": "com.synthos.fx-optimizer",
+  "displayName": "Synthos FX Optimizer",
+  "version": "1.0.0-beta.1",
   "unity": "2022.3",
-  "description": "An optimizer aiming to reduce mesh & material count and more of VRChat 3.0 avatars.",
+  "description": "Merges and cleans up the FX layer of VRChat avatars on upload. Trimmed fork of d4rkAvatarOptimizer by d4rkpl4y3r.",
   "dependencies": {},
-  "url": "https://github.com/d4rkc0d3r/d4rkAvatarOptimizer",
+  "url": "https://github.com/GRIMREAPER35487/Synthos-FX-Optimizer",
   "author" : {
-    "name" : "d4rkpl4y3r"
+    "name" : "Synthos"
   },
-  "changelogUrl": "https://github.com/d4rkc0d3r/d4rkAvatarOptimizer/blob/main/CHANGELOG.md",
+  "changelogUrl": "https://github.com/GRIMREAPER35487/Synthos-FX-Optimizer/blob/main/CHANGELOG.md",
   "gitDependencies": {},
   "vpmDependencies": {
     "com.vrchat.avatars": ">=3.9.0 <4.0.0-a"
   },
-  "legacyFolders": {
-    "Assets\\d4rkAvatarOptimizer": ""
-  },
+  "legacyFolders": {},
   "legacyFiles": {},
   "hideInEditor": false
 }

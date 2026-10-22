@@ -12,18 +12,17 @@ using VRC.SDK3.Dynamics.Contact.Components;
 using VRC.Dynamics;
 using VRC.SDKBase.Validation.Performance;
 
-using MaterialSlot = d4rkAvatarOptimizer.MaterialSlot;
-using d4rkpl4y3r.d4rkavataroptimizer;
+using MaterialSlot = SynthosFxOptimizer.MaterialSlot;
 
-[CustomEditor(typeof(d4rkAvatarOptimizer))]
-public class d4rkAvatarOptimizerEditor : Editor
+[CustomEditor(typeof(SynthosFxOptimizer))]
+public class SynthosFxOptimizerEditor : Editor
 {
-    private static d4rkAvatarOptimizer optimizer;
+    private static SynthosFxOptimizer optimizer;
     private static long longestTimeUsed = -2;
 
     public override void OnInspectorGUI()
     {
-        optimizer = (d4rkAvatarOptimizer)target;
+        optimizer = (SynthosFxOptimizer)target;
         OnSelectionChange();
         // exclude OnSelectionChange from timing since it parses shaders which will stay cached after the first time
         var stopWatch = new System.Diagnostics.Stopwatch();
@@ -47,7 +46,7 @@ public class d4rkAvatarOptimizerEditor : Editor
             {
                 settingsRect = GUILayoutUtility.GetRect(32, 1, GUILayout.ExpandWidth(false));
                 EditorGUILayout.LabelField(
-                    $"<size=20>d4rk{(currentViewWidth > 370 ? "pl4y3r's" : "")} Avatar Optimizer</size>",
+                    $"<size=20>Synthos FX Optimizer</size>",
                     new GUIStyle(EditorStyles.label) { richText = true, alignment = TextAnchor.LowerCenter });
             }
             EditorGUILayout.LabelField($"v{packageInfo.version}", EditorStyles.centeredGreyMiniLabel);
@@ -83,7 +82,7 @@ public class d4rkAvatarOptimizerEditor : Editor
         }
 
         var presets = optimizer.GetPresetNames();
-        if (presets.Count > 0)
+        if (presets.Count > 1)
         {
             using (new EditorGUILayout.HorizontalScope(GUI.skin.box))
             {
@@ -103,46 +102,12 @@ public class d4rkAvatarOptimizerEditor : Editor
         }
 
         ToggleOptimizerProperty(nameof(optimizer.ApplyOnUpload));
-        if (d4rkAvatarOptimizer.HasCustomShaderSupport)
-            ToggleOptimizerProperty(nameof(optimizer.WritePropertiesAsStaticValues));
-        ToggleOptimizerProperty(nameof(optimizer.MergeSkinnedMeshes));
-        using (new EditorGUI.IndentLevelScope())
-        {
-            if (d4rkAvatarOptimizer.HasCustomShaderSupport)
-                ToggleOptimizerProperty(nameof(optimizer.MergeSkinnedMeshesWithShaderToggle));
-            ToggleOptimizerProperty(nameof(optimizer.MergeSkinnedMeshesWithNaNimation));
-            using (new EditorGUI.IndentLevelScope())
-            {
-                ToggleOptimizerProperty(nameof(optimizer.NaNimationAllow3BoneSkinning));
-                ToggleOptimizerProperty(nameof(optimizer.MergeSkinnedMeshesSeparatedByDefaultEnabledState));
-            }
-            ToggleOptimizerProperty(nameof(optimizer.MergeStaticMeshesAsSkinned));
-        }
-        ToggleOptimizerProperty(nameof(optimizer.AllowMeshDataDuplication));
-        if (d4rkAvatarOptimizer.HasCustomShaderSupport)
-        {
-            ToggleOptimizerProperty(nameof(optimizer.MergeDifferentPropertyMaterials));
-            using (new EditorGUI.IndentLevelScope())
-            {
-                ToggleOptimizerProperty(nameof(optimizer.MergeSameDimensionTextures));
-                using (new EditorGUI.IndentLevelScope())
-                {
-                    ToggleOptimizerProperty(nameof(optimizer.MergeMainTex));
-                }
-            }
-        }
         ToggleOptimizerProperty(nameof(optimizer.OptimizeFXLayer));
-        using (new EditorGUI.IndentLevelScope())
-        {
-            ToggleOptimizerProperty(nameof(optimizer.CombineApproximateMotionTimeAnimations));
-        }
         ToggleOptimizerProperty(nameof(optimizer.DeleteUnusedAnimatorParameters));
         ToggleOptimizerProperty(nameof(optimizer.DisablePhysBonesWhenUnused));
         ToggleOptimizerProperty(nameof(optimizer.MergeSameRatioBlendShapes));
         ToggleOptimizerProperty(nameof(optimizer.MMDCompatibility));
         ToggleOptimizerProperty(nameof(optimizer.DeleteUnusedComponents));
-        ToggleOptimizerProperty(nameof(optimizer.DeleteUnusedGameObjects));
-        ToggleOptimizerProperty(nameof(optimizer.UseRingFingerAsFootCollider));
 
         optimizer.ExcludeTransforms ??= new List<Transform>();
         optimizer.ExcludeTransformChildren ??= new List<bool>();
@@ -158,26 +123,8 @@ public class d4rkAvatarOptimizerEditor : Editor
         Profiler.Reset();
 
         Profiler.StartSection("Validate");
-        GUI.enabled = Validate();
+        Validate();
         Profiler.EndSection();
-
-        if (GUILayout.Button("<size=18>Create Optimized Copy</size>", new GUIStyle(GUI.skin.button) { richText = true }))
-        {
-            AssignNewAvatarIDIfEmpty();
-            var avDescriptor = optimizer.GetAvatarDescriptor();
-            var copy = Instantiate(avDescriptor.gameObject);
-            SceneManager.MoveGameObjectToScene(copy, avDescriptor.gameObject.scene);
-            copy.name = avDescriptor.gameObject.name + "(BrokenCopy)";
-            copy.GetComponent<d4rkAvatarOptimizer>().Optimize();
-            copy.name = avDescriptor.gameObject.name + "(OptimizedCopy)";
-            copy.SetActive(true);
-            avDescriptor.gameObject.SetActive(false);
-            Selection.objects = new Object[] { copy };
-            Profiler.Reset();
-            return;
-        }
-
-        GUI.enabled = true;
         if (optimizer.GetAvatarDescriptor() == null)
         {
             return;
@@ -260,10 +207,6 @@ public class d4rkAvatarOptimizerEditor : Editor
         Profiler.EndSection();
 
         EditorGUILayout.Separator();
-        
-        DrawWhyNoMaterialMergeButton();
-
-        EditorGUILayout.Separator();
 
         if (Foldout("Show Mesh & Material Merge Preview", ref optimizer.ShowMeshAndMaterialMergePreview, showNonDestructiveToolingWarning: true))
         {
@@ -340,110 +283,10 @@ public class d4rkAvatarOptimizerEditor : Editor
         if (Foldout("Debug Info", ref optimizer.ShowDebugInfo, showNonDestructiveToolingWarning: true))
         {
             using var indent = new EditorGUI.IndentLevelScope();
-            if (Foldout("Unparsable Materials", ref optimizer.DebugShowUnparsableMaterials))
-            {
-                Profiler.StartSection("Unparsable Materials");
-                var list = optimizer.GetUsedComponentsInChildren<Renderer>()
-                    .SelectMany(r => r.sharedMaterials).Distinct()
-                    .Select(mat => (mat, ShaderAnalyzer.Parse(mat?.shader)))
-                    .Where(t => !(t.Item2 != null && t.Item2.parsedCorrectly))
-                    .Select(t => t.mat).ToArray();
-                foreach (var shader in list.Select(mat => mat?.shader).Distinct())
-                {
-                    var parsed = ShaderAnalyzer.Parse(shader);
-                    EditorGUILayout.HelpBox((shader?.name ?? "Missing shader") + "\n" +
-                        (parsed?.errorMessage ?? "Missing shader can't be parsed."),
-                        MessageType.Info);
-                    var materialsWithThisShader = list.Where(mat => mat?.shader == shader).ToArray();
-                    DrawDebugList(materialsWithThisShader);
-                }
-                Profiler.EndSection();
-            }
-            if (Foldout("Unmergable Materials", ref optimizer.DebugShowUnmergableMaterials))
-            {
-                Profiler.StartSection("Unmergable Materials");
-                var list = optimizer.GetUsedComponentsInChildren<Renderer>()
-                    .SelectMany(r => r.sharedMaterials).Distinct()
-                    .Select(mat => (mat, ShaderAnalyzer.Parse(mat?.shader)))
-                    .Where(t => (t.Item2 != null && t.Item2.parsedCorrectly && !t.Item2.CanMerge()))
-                    .Select(t => t.mat).ToArray();
-                foreach (var shader in list.Select(mat => mat.shader).Distinct())
-                {
-                    var parsed = ShaderAnalyzer.Parse(shader);
-                    EditorGUILayout.HelpBox(shader.name + "\n" + parsed.CantMergeReason(), MessageType.Info);
-                    var materialsWithThisShader = list.Where(mat => mat.shader == shader).ToArray();
-                    DrawDebugList(materialsWithThisShader);
-                }
-                Profiler.EndSection();
-            }
-            if (Foldout("Unmergable Texture Materials", ref optimizer.DebugShowUnmergableTextureMaterials))
-            {
-                Profiler.StartSection("Unmergable Texture Materials");
-                var list = optimizer.GetUsedComponentsInChildren<Renderer>()
-                    .SelectMany(r => r.sharedMaterials).Distinct()
-                    .Select(mat => (mat, ShaderAnalyzer.Parse(mat?.shader)))
-                    .Where(t => (t.Item2 != null && t.Item2.CanMerge() && !t.Item2.CanMergeTextures()))
-                    .Select(t => t.mat).ToArray();
-                foreach (var shader in list.Select(mat => mat.shader).Distinct())
-                {
-                    var parsed = ShaderAnalyzer.Parse(shader);
-                    EditorGUILayout.HelpBox(shader.name + "\n" + parsed.CantMergeTexturesReason(), MessageType.Info);
-                    var materialsWithThisShader = list.Where(mat => mat.shader == shader).ToArray();
-                    DrawDebugList(materialsWithThisShader);
-                }
-            }
-            if (Foldout("Crunched Textures", ref optimizer.DebugShowCrunchedTextures))
-            {
-                Profiler.StartSection("Crunched Textures");
-                DrawDebugList(CrunchedTextures);
-                Profiler.EndSection();
-            }
             if (Foldout("NonBC5 Normal Maps", ref optimizer.DebugShowNonBC5NormalMaps))
             {
                 Profiler.StartSection("NonBC5 Normal Maps");
                 DrawDebugList(NonBC5NormalMaps);
-                Profiler.EndSection();
-            }
-            if (Foldout("Unmergable NaNimation by Animations", ref optimizer.DebugShowMeshesThatCantMergeNaNimationCausedByAnimations))
-            {
-                Profiler.StartSection("Unmergable NaNimation by Animations");
-                DrawDebugList(CantMergeNaNimationBecauseOfWDONAnimations);
-                Profiler.EndSection();
-            }
-            if (optimizer.WritePropertiesAsStaticValues)
-            {
-                if (Foldout("Locked in Materials", ref optimizer.DebugShowLockedInMaterials))
-                {
-                    Profiler.StartSection("Locked in Materials");
-                    var list = optimizer.GetUsedComponentsInChildren<Renderer>()
-                        .SelectMany(r => r.sharedMaterials).Distinct()
-                        .Where(mat => IsLockedIn(mat) && !HasPropertyMarkedAsRenameAnimated(mat)).ToArray();
-                    DrawDebugList(list);
-                    Profiler.EndSection();
-                }
-                if (Foldout("Unlocked Materials with Rename Animated", ref optimizer.DebugShowUnlockedMaterialsWithRenameAnimated))
-                {
-                    Profiler.StartSection("Unlocked Materials with Rename Animated");
-                    var list = optimizer.GetUsedComponentsInChildren<Renderer>()
-                        .SelectMany(r => r.sharedMaterials).Distinct()
-                        .Where(mat => CanLockIn(mat) && !IsLockedIn(mat) && HasPropertyMarkedAsRenameAnimated(mat)).ToArray();
-                    DrawDebugList(list, mat => PropertiesTooltip(mat));
-                    Profiler.EndSection();
-                }
-            }
-            else if (Foldout("Unlocked Materials", ref optimizer.DebugShowUnlockedMaterials))
-            {
-                Profiler.StartSection("Unlocked Materials");
-                var list = optimizer.GetUsedComponentsInChildren<Renderer>()
-                    .SelectMany(r => r.sharedMaterials).Distinct()
-                    .Where(mat => CanLockIn(mat) && !IsLockedIn(mat)).ToArray();
-                DrawDebugList(list);
-                Profiler.EndSection();
-            }
-            if (optimizer.FindAllPenetrators().Count > 0 && Foldout("Penetrators", ref optimizer.DebugShowPenetrators))
-            {
-                Profiler.StartSection("Penetrators");
-                DrawDebugList(optimizer.FindAllPenetrators().ToArray());
                 Profiler.EndSection();
             }
             if (optimizer.MergeSameRatioBlendShapes && Foldout("Same Ratio Blend Shapes", ref optimizer.DebugShowMergeableBlendShapes))
@@ -494,89 +337,6 @@ public class d4rkAvatarOptimizerEditor : Editor
                             EditorGUILayout.HelpBox("Declared names missing on this mesh (informational):\n" + string.Join("\n", missing), MessageType.Info);
                     }
                 }
-            }
-            if (Foldout("Mesh Bone Weight Stats", ref optimizer.DebugShowBoneWeightStats))
-            {
-                Profiler.StartSection("Mesh Bone Weight Stats");
-                var statsList = optimizer.GetUsedComponentsInChildren<SkinnedMeshRenderer>()
-                    .Select(r => r.sharedMesh).Distinct()
-                    .Select(mesh => (mesh, GetMeshBoneWeightStats(mesh)))
-                    .OrderByDescending(t => t.Item2[3].count)
-                    .ThenByDescending(t => t.Item2[2].count)
-                    .ThenByDescending(t => t.Item2[1].count)
-                    .ThenByDescending(t => t.Item2[0].count)
-                    .ToArray();
-                foreach (var tuple in statsList)
-                {
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        EditorGUILayout.Space(15, false);
-                        using (new EditorGUILayout.VerticalScope(GUI.skin.box))
-                        {
-                            EditorGUILayout.ObjectField(tuple.mesh, typeof(Mesh), false);
-                            var stats = tuple.Item2;
-                            if (stats[0].count == 0)
-                            {
-                                EditorGUILayout.LabelField("No bone weights");
-                            }
-                            else
-                            {
-                                var entryWidth = GUILayout.Width(60f);
-                                using (new EditorGUILayout.HorizontalScope())
-                                {
-                                    EditorGUILayout.LabelField($"Index", entryWidth);
-                                    EditorGUILayout.LabelField($"Count", entryWidth);
-                                    EditorGUILayout.LabelField($"Max", entryWidth);
-                                    EditorGUILayout.LabelField($"Median", entryWidth);
-                                }
-                                for (int i = 0; i < 4; i++)
-                                {
-                                    if (stats[i].count == 0)
-                                        continue;
-
-                                    using (new EditorGUILayout.HorizontalScope())
-                                    {
-                                        EditorGUILayout.LabelField($"{i}", entryWidth);
-                                        EditorGUILayout.LabelField($"{stats[i].count}", entryWidth);
-                                        EditorGUILayout.LabelField($"{stats[i].maxValue:F2}", entryWidth);
-                                        EditorGUILayout.LabelField($"{stats[i].medianValue:F2}", entryWidth);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    EditorGUILayout.Separator();
-                }
-                Profiler.EndSection();
-            }
-            if (Foldout("Material Contacts", ref optimizer.DebugShowMaterialContacts))
-            {
-                Profiler.StartSection("Material Contacts");
-                var materialContactGroups = optimizer.FindMaterialContactReceiverGroups();
-                if (materialContactGroups.Count == 0)
-                {
-                    EditorGUILayout.LabelField("---");
-                }
-                foreach (var (receiver, targets) in materialContactGroups)
-                {
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        EditorGUILayout.Space(15, false);
-                        using (new EditorGUILayout.VerticalScope(GUI.skin.box))
-                        {
-                            EditorGUILayout.ObjectField(receiver, typeof(VRCContactReceiver), true);
-                            using (new EditorGUI.IndentLevelScope())
-                            {
-                                foreach (var target in targets)
-                                {
-                                    EditorGUILayout.ObjectField(target, typeof(Renderer), true);
-                                }
-                            }
-                        }
-                    }
-                    EditorGUILayout.Separator();
-                }
-                Profiler.EndSection();
             }
             if (Foldout("Phys Bone Dependencies", ref optimizer.DebugShowPhysBoneDependencies))
             {
@@ -687,16 +447,17 @@ public class d4rkAvatarOptimizerEditor : Editor
     private bool Validate()
     {
         static void HelpBox(string message, MessageType type, string tooltip = null)
-            => WhyNoMaterialMerge.HelpBox(message, EditorStyles.helpBox.fontSize + 2, type, tooltip);
-
-        static string MaterialsTooltip(Material[] materials, string header = null)
         {
-            var lines = MaterialsTooltipLines(materials);
-            return header == null ? string.Join("\n", lines) : $"{header}\n{string.Join("\n", lines)}";
+            var style = new GUIStyle(EditorStyles.helpBox) { fontSize = EditorStyles.helpBox.fontSize + 2 };
+            Texture icon = type switch
+            {
+                MessageType.Info => EditorGUIUtility.IconContent("console.infoicon").image,
+                MessageType.Warning => EditorGUIUtility.IconContent("console.warnicon").image,
+                MessageType.Error => EditorGUIUtility.IconContent("console.erroricon").image,
+                _ => null
+            };
+            EditorGUILayout.LabelField(new GUIContent(message, icon, tooltip ?? ""), style);
         }
-
-        static IEnumerable<string> MaterialsTooltipLines(IEnumerable<Material> materials)
-            => TooltipLines(materials.Select(m => m == null ? "null" : m.name), "materials");
 
         static string TexturesTooltip(Texture[] textures, string header = null)
         {
@@ -712,10 +473,10 @@ public class d4rkAvatarOptimizerEditor : Editor
             return false;
         }
 
-        var allOptimizerComponents = avDescriptor.GetComponentsInChildren<d4rkAvatarOptimizer>(true);
+        var allOptimizerComponents = avDescriptor.GetComponentsInChildren<SynthosFxOptimizer>(true);
         if (allOptimizerComponents.Length > 1)
         {
-            HelpBox("Multiple d4rkAvatarOptimizer components found on the avatar.\n" +
+            HelpBox("Multiple Synthos FX Optimizer components found on the avatar.\n" +
                 "Remove the duplicates. Components are at paths:\n - " +
                 string.Join("\n - ", allOptimizerComponents.Select(c => avDescriptor.name + (c.transform == avDescriptor.transform ? "" : "/" + c.GetPathToRoot(c)))),
                 MessageType.Error);
@@ -731,12 +492,6 @@ public class d4rkAvatarOptimizerEditor : Editor
             return false;
         }
 
-        if (avDescriptor.name.EndsWith("(OptimizedCopy)"))
-        {
-            HelpBox("Put the optimizer on the original avatar, not the optimized copy.", MessageType.Error);
-            return false;
-        }
-
         var allComponentTypes = optimizer.GetAllComponentTypesInAvatar().Select(t => t.FullName).ToList();
         var unknownVRCComponentTypes = allComponentTypes.Where(t => t.StartsWith("VRC.SDK3.") && !knownVRCComponentTypeNames.Contains(t)).ToList();
         if (unknownVRCComponentTypes.Count > 0)
@@ -745,18 +500,6 @@ public class d4rkAvatarOptimizerEditor : Editor
                 string.Join("\n - ", unknownVRCComponentTypes) + 
                 "\nYou need to update the optimizer or not use it if there is no new version available.\n" +
                 "Not doing so will most likely break things on your avatar.", MessageType.Error);
-        }
-
-        if (optimizer.UseRingFingerAsFootCollider)
-        {
-            if (avDescriptor.collider_footL.transform == null || avDescriptor.collider_footR.transform == null
-                || !avDescriptor.collider_footL.transform.IsDescendantOf(avDescriptor.transform)
-                || !avDescriptor.collider_footR.transform.IsDescendantOf(avDescriptor.transform))
-            {
-                HelpBox(
-                    "Foot collider transform not set to this avatar.\n" +
-                    "Open the collider foldout in the VRC Avatar Descriptor.", MessageType.Error);
-            }
         }
 
         if (avDescriptor.lipSync == VRC.SDKBase.VRC_AvatarDescriptor.LipSyncStyle.VisemeBlendShape
@@ -776,123 +519,6 @@ public class d4rkAvatarOptimizerEditor : Editor
             if (avDescriptor.GetComponentsInChildren<SkinnedMeshRenderer>(true).All(r => r != meshRenderer))
             {
                 HelpBox("Eyelid SkinnedMeshRenderer is not a child of the avatar root.", MessageType.Error);
-            }
-        }
-
-        if (FindObjectsOfType<VRCAvatarDescriptor>().Any(av => av != null && av.name.EndsWith("(OptimizedCopy)")))
-        {
-            HelpBox(
-                "Optimized copy of some avatar is present in the scene.\n" +
-                "Its assets will be deleted when creating a new optimized copy.", MessageType.Error);
-        }
-
-        if (FindObjectsOfType<VRCAvatarDescriptor>().Any(av => av != null && av.name.EndsWith("(BrokenCopy)")))
-        {
-            HelpBox(
-                "Seems like the last optimization attempt failed.\n" +
-                "You can try to delete the broken copy and try again with different settings or adding parts to the exclusion list.\n" +
-                "Click this message to find or create a bug report on github.", MessageType.Error);
-            if (Event.current.type == EventType.MouseDown && GUILayoutUtility.GetLastRect().Contains(Event.current.mousePosition))
-                Application.OpenURL("https://github.com/d4rkc0d3r/d4rkAvatarOptimizer/issues");
-        }
-
-        var exclusions = optimizer.GetAllExcludedTransforms();
-
-        if ((optimizer.MergeSkinnedMeshesWithNaNimation || optimizer.MergeSkinnedMeshesWithShaderToggle)
-            && optimizer.GetPolyCount() > d4rkAvatarOptimizer.MaxPolyCountForAutoShaderToggle)
-        {
-            HelpBox(
-                $"For avatars with a high poly count ({(int)(d4rkAvatarOptimizer.MaxPolyCountForAutoShaderToggle / 1000)}k or more)" +
-                " it might be disadvantageous to merge meshes with NaNimation or Shader toggles.", MessageType.Warning);
-        }
-
-        if (optimizer.WritePropertiesAsStaticValues)
-        {
-            var allMaterials = optimizer.GetUsedComponentsInChildren<Renderer>()
-                .Where(r => !exclusions.Contains(r.transform))
-                .SelectMany(r => r.sharedMaterials).Distinct().ToArray();
-
-            var allParsedMaterials = allMaterials
-                .Select(m => (material: m, parsed: ShaderAnalyzer.Parse(m?.shader))).ToArray();
-
-            var correctlyParsedMaterials = allParsedMaterials
-                .Where(t => t.parsed?.parsedCorrectly ?? false)
-                .Select(t => t.parsed).ToArray();
-
-            var renameAnimatedMaterials = allMaterials
-                .Where(m => !IsLockedIn(m) && HasPropertyMarkedAsRenameAnimated(m)).ToArray();
-            if (renameAnimatedMaterials.Length > 0)
-            {
-                HelpBox(
-                    "Some materials have properties marked as Rename Animated without being locked in.\n" +
-                    "Write Properties as Static Values does not support this option.\n" +
-                    "If you rely on Rename Animated, lock in these materials with their native method.\n" +
-                    "Check the Debug Info foldout for a list of these materials.",
-                    MessageType.Warning,
-                    MaterialsTooltip(renameAnimatedMaterials, "Rename Animated (not locked in):"));
-            }
-
-            var mergeInfoList = new List<string>();
-            var mergeTooltipList = new List<string>();
-
-            if (correctlyParsedMaterials.Length != allMaterials.Length)
-            {
-                mergeInfoList.Add("Some materials could not be parsed.\n");
-                mergeTooltipList.Add("Could not be parsed:");
-                mergeTooltipList.AddRange(MaterialsTooltipLines(
-                    allParsedMaterials.Where(t => !(t.parsed?.parsedCorrectly ?? false)).Select(t => t.material)));
-            }
-
-            if (optimizer.MergeDifferentPropertyMaterials && correctlyParsedMaterials.Any(p => !p.CanMerge()))
-            {
-                mergeInfoList.Add("Some materials do not support merging.\n");
-                if (mergeTooltipList.Count > 0)
-                    mergeTooltipList.Add("");
-                mergeTooltipList.Add("Do not support merging:");
-                mergeTooltipList.AddRange(MaterialsTooltipLines(
-                    allParsedMaterials.Where(t => (t.parsed?.parsedCorrectly ?? false) && !t.parsed.CanMerge()).Select(t => t.material)));
-            }
-
-            if (optimizer.MergeSameDimensionTextures && correctlyParsedMaterials.Any(p => p.CanMerge() && !p.CanMergeTextures()))
-            {
-                mergeInfoList.Add("Some materials do not support merging textures.\n");
-                if (mergeTooltipList.Count > 0)
-                    mergeTooltipList.Add("");
-                mergeTooltipList.Add("Do not support merging textures:");
-                mergeTooltipList.AddRange(MaterialsTooltipLines(
-                    allParsedMaterials.Where(t => (t.parsed?.parsedCorrectly ?? false) && t.parsed.CanMerge() && !t.parsed.CanMergeTextures()).Select(t => t.material)));
-            }
-
-            if (mergeInfoList.Count > 0)
-            {
-                HelpBox(
-                    string.Join("", mergeInfoList) +
-                    "Swapping their shaders to compatible ones might help reduce material count further.\n" +
-                    "Check the Debug Info foldout for more info.",
-                    MessageType.Info,
-                    string.Join("\n", mergeTooltipList));
-            }
-
-            var lockedInMaterials = allMaterials
-                .Where(m => IsLockedIn(m) && !HasPropertyMarkedAsRenameAnimated(m)).ToArray();
-            if (optimizer.MergeDifferentPropertyMaterials && lockedInMaterials.Length > 0)
-            {
-                HelpBox(
-                    "Some materials are locked in.\n" +
-                    "Write Properties as Static Values will do effectively the same as locking in while also having more potential to reduce material count.\n" +
-                    "Check the Debug Info foldout for a full list.",
-                    MessageType.Info,
-                    MaterialsTooltip(lockedInMaterials, "Locked in:"));
-            }
-
-            if (optimizer.MergeSameDimensionTextures && CrunchedTextures.Length > 1)
-            {
-                HelpBox(
-                    "Some textures are crunch compressed.\n" +
-                    "Crunch compressed textures cannot be merged.\n" +
-                    "Check the Debug Info foldout for a full list.",
-                    MessageType.Info,
-                    TexturesTooltip(CrunchedTextures, "Crunched Textures:"));
             }
         }
 
@@ -922,21 +548,13 @@ public class d4rkAvatarOptimizerEditor : Editor
             }
         }
 
-        if (optimizer.MergeSkinnedMeshesWithNaNimation && CantMergeNaNimationBecauseOfWDONAnimations.Length > 0)
-        {
-            HelpBox(
-                "Some meshes are missing the corresponding on or off toggle animation. This is likely due to a WD ON workflow.\n" +
-                "This means they can't be merged with NaNimation and switching to a WD OFF workflow would help reduce mesh count further.\n" +
-                "Check the Debug Info foldout for a full list at:\n\"Unmergable NaNimation by Animations\"", MessageType.Info);
-        }
-
         var tools = optimizer.GetNonDestructiveToolsUsedOnAvatar();
         if (tools.Contains("VRCFury"))
         {
             HelpBox(
                 "VRCFury is used on the avatar. This means the perf rank change and merge result previews can be inaccurate as the optimizer does not take VRCFury into account for those.\n" +
                 "To test in editor built a VRCFury test avatar and use the optimizer on that.\n" +
-                $"For uploading use the {d4rkAvatarOptimizer.GetDisplayName(nameof(d4rkAvatarOptimizer.ApplyOnUpload))} feature as that ensures fury and the optimizer get used in the correct order.", MessageType.Warning);
+                $"For uploading use the {SynthosFxOptimizer.GetDisplayName(nameof(SynthosFxOptimizer.ApplyOnUpload))} feature as that ensures fury and the optimizer get used in the correct order.", MessageType.Warning);
             return false;
         }
 
@@ -946,23 +564,11 @@ public class d4rkAvatarOptimizerEditor : Editor
                 "Modular Avatar is used on the avatar. This means the perf rank change and merge result previews " + 
                 "can be inaccurate as the optimizer does not take Modular Avatar into account for those.\n" +
                 "To test in editor use \"Manual bake avatar\" before clicking the optimize button.\n" +
-                $"For uploading use the {d4rkAvatarOptimizer.GetDisplayName(nameof(d4rkAvatarOptimizer.ApplyOnUpload))} feature as that ensures Modular Avatar and the optimizer get used in the correct order.", MessageType.Warning);
+                $"For uploading use the {SynthosFxOptimizer.GetDisplayName(nameof(SynthosFxOptimizer.ApplyOnUpload))} feature as that ensures Modular Avatar and the optimizer get used in the correct order.", MessageType.Warning);
             return false;
         }
 
         return true;
-    }
-
-    private void DrawWhyNoMaterialMergeButton()
-    {
-        if (!optimizer.MergeDifferentPropertyMaterials)
-            return;
-        using var _ = new EditorGUILayout.HorizontalScope();
-        GUILayout.Space(15 * EditorGUI.indentLevel);
-        if (GUILayout.Button(new GUIContent("Open Material Merge Analyzer", "Open the \"Why No Material Merge\" window to analyze why some materials can't be merged.")))
-        {
-            EditorWindow.GetWindow<WhyNoMaterialMerge>().Show();
-        }
     }
 
     private string GetNonDestructiveToolingWarning(string sectionName)
@@ -989,7 +595,7 @@ public class d4rkAvatarOptimizerEditor : Editor
         pm.AssignId(VRC.Core.PipelineManager.ContentType.avatar);
     }
 
-    private d4rkAvatarOptimizer lastSelected = null;
+    private SynthosFxOptimizer lastSelected = null;
     private List<List<List<MaterialSlot>>> mergedMaterialPreviewCache = null;
     private Transform[] unmovingBonesCache = null;
     private GameObject[] gameObjectsWithToggleAnimationsCache = null;
@@ -1459,12 +1065,12 @@ public class d4rkAvatarOptimizerEditor : Editor
 
     private bool ToggleOptimizerProperty(string propertyName)
     {
-        var property = typeof(d4rkAvatarOptimizer).GetProperty(propertyName);
+        var property = typeof(SynthosFxOptimizer).GetProperty(propertyName);
         if (property == null)
             return false;
         var value = (bool)property.GetValue(optimizer);
         var output = value;
-        var content = GetLabelWithTooltip(d4rkAvatarOptimizer.GetDisplayName(propertyName));
+        var content = GetLabelWithTooltip(SynthosFxOptimizer.GetDisplayName(propertyName));
         using (new EditorGUI.DisabledScope(!optimizer.CanChangeSetting(propertyName)))
         {
             output = EditorGUILayout.ToggleLeft(content, value);
@@ -1590,7 +1196,7 @@ public class d4rkAvatarOptimizerEditor : Editor
         }
     }
 
-    private void DynamicExclusionList(d4rkAvatarOptimizer optimizer)
+    private void DynamicExclusionList(SynthosFxOptimizer optimizer)
     {
         using var serializedObject = new SerializedObject(optimizer);
         var transforms = serializedObject.FindProperty(nameof(optimizer.ExcludeTransforms));
@@ -1723,7 +1329,7 @@ public class d4rkAvatarOptimizerEditor : Editor
             var (label, oldValue, newValue, category) = changes[i];
             var oldRating = PerformanceRating.VeryPoor;
             var newRating = PerformanceRating.VeryPoor;
-            var perfLevels = d4rkAvatarOptimizer.HasCustomShaderSupport ? _perfLevelsWindows : _perfLevelsAndroid;
+            var perfLevels = SynthosFxOptimizer.HasCustomShaderSupport ? _perfLevelsWindows : _perfLevelsAndroid;
             if (perfLevels.ContainsKey(category))
             {
                 oldRating = GetPerfRank(oldValue, perfLevels[category]);

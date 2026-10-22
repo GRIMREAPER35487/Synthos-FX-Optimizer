@@ -1,4 +1,4 @@
-﻿#if UNITY_EDITOR
+#if UNITY_EDITOR
 using UnityEngine;
 using System.Linq;
 using System.IO;
@@ -9,9 +9,9 @@ namespace d4rkpl4y3r.AvatarOptimizer
 {
     public class AvatarOptimizerSettings : EditorWindow
     {
-        private static readonly d4rkAvatarOptimizer.Settings defaultSettings = new();
+        private static readonly SynthosFxOptimizer.Settings defaultSettings = new();
         
-        private static readonly string PrefsPrefix = "d4rkpl4y3r_AvatarOptimizer_";
+        private static readonly string PrefsPrefix = "Synthos_FxOptimizer_";
 
         public static bool DoOptimizeWithDefaultSettingsWhenNoComponent
         {
@@ -52,11 +52,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
         static Texture _githubIcon = null;
         static Texture GitHubIcon { get => _githubIcon == null ? _githubIcon = Resources.Load<Texture>("GitHub_Invertocat_White") : _githubIcon; }
 
-        static Texture _kofiIcon = null;
-        static Texture KoFiIcon { get => _kofiIcon == null ? _kofiIcon = Resources.Load<Texture>("d4rkAO_ko-fi_64") : _kofiIcon; }
-
-        
-        [MenuItem("Tools/d4rkpl4y3r/Avatar Optimizer Settings")]
+        [MenuItem("Tools/Synthos/FX Optimizer Settings")]
         static void Init()
         {
             GetWindow<AvatarOptimizerSettings>().Show();
@@ -116,7 +112,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     SharedMeshVertexCountExclusionThreshold = 1024;
                     ProfileTimeUsedInUI = false;
                 }
-                var trashBinPath = d4rkAvatarOptimizer.GetTrashBinLocation().path;
+                var trashBinPath = SynthosFxOptimizer.GetTrashBinLocation().path;
                 using (new EditorGUI.DisabledScope(!Directory.Exists(trashBinPath)))
                 {
                     if (BigIconButton("d_TextAsset Icon", "Open log file of last optimization"))
@@ -147,18 +143,14 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 }
                 if (BigIconButton(GitHubIcon, "Open GitHub Repository", pad: 3))
                 {
-                    Application.OpenURL("https://github.com/d4rkc0d3r/d4rkAvatarOptimizer");
-                }
-                if (BigIconButton(KoFiIcon, "Support me on Ko-fi!"))
-                {
-                    Application.OpenURL("https://ko-fi.com/d4rkpl4y3r");
+                    Application.OpenURL("https://github.com/GRIMREAPER35487/Synthos-FX-Optimizer");
                 }
             }
 
             using (new SectionScope("Global Settings"))
             {
                 DoOptimizeWithDefaultSettingsWhenNoComponent = BoolFieldLeft(
-                    new GUIContent("Always Optimize on Upload", "If an Avatar does not have a d4rkAvatarOptimizer component attached, it will be optimized with the default settings below when uploading it to VRChat."),
+                    new GUIContent("Always Optimize on Upload", "If an Avatar does not have a SynthosFxOptimizer component attached, it will be optimized with the default settings below when uploading it to VRChat."),
                     DoOptimizeWithDefaultSettingsWhenNoComponent);
                 DoOptimizeInPlayMode = BoolFieldLeft(
                     new GUIContent("Optimize in Play Mode", "Allows optimizing to run in play mode. (Only relevant with tools that call build in play mode)"),
@@ -184,7 +176,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 EditorGUILayout.HelpBox("These settings are the default values when adding the Avatar Optimizer component to a model."
                     + "You can change them here to suit your needs."
                     + "\nA * indicates settings that are different from their default value.", MessageType.None);
-                var fields = typeof(d4rkAvatarOptimizer.Settings).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public)
+                var fields = typeof(SynthosFxOptimizer.Settings).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public)
                     .Where(f => f.FieldType == typeof(bool) || f.FieldType == typeof(int)).ToArray();
                 if (GUILayout.Button("Reset to Default"))
                 {
@@ -198,7 +190,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     if (field.FieldType == typeof(bool))
                     {
                         var value = BoolFieldLeft(
-                            new GUIContent(d4rkAvatarOptimizer.GetDisplayName(field.Name) +
+                            new GUIContent(SynthosFxOptimizer.GetDisplayName(field.Name) +
                                         (field.GetValue(defaultSettings).Equals(0 != GetValue(field.Name)) ? "" : " *")),
                             0 != GetValue(field.Name));
                         SetValue(field.Name, value ? 1 : 0);
@@ -206,7 +198,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     else
                     {
                         var value = PopupFieldLeft(
-                            new GUIContent(d4rkAvatarOptimizer.GetDisplayName(field.Name) +
+                            new GUIContent(SynthosFxOptimizer.GetDisplayName(field.Name) +
                                         (field.GetValue(defaultSettings).Equals(GetValue(field.Name)) ? "" : " *")),
                             GetValue(field.Name),
                             new string[] { "Off", "On", "Auto" });
@@ -247,8 +239,8 @@ namespace d4rkpl4y3r.AvatarOptimizer
 
         public static void OpenLogFile()
         {
-            var trashBinPath = d4rkAvatarOptimizer.GetTrashBinLocation().path;
-            var logFilePath = trashBinPath + "_d4rkAvatarOptimizer.log";
+            var trashBinPath = SynthosFxOptimizer.GetTrashBinLocation().path;
+            var logFilePath = trashBinPath + "_SynthosFxOptimizer.log";
             var logAsset = AssetDatabase.LoadAssetAtPath<DefaultAsset>(logFilePath);
             if (logAsset != null)
             {
@@ -262,27 +254,27 @@ namespace d4rkpl4y3r.AvatarOptimizer
 
         public static int GetValue(string key)
         {
-            var field = typeof(d4rkAvatarOptimizer.Settings).GetField(key, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+            var field = typeof(SynthosFxOptimizer.Settings).GetField(key, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
             if (field == null)
             {
-                throw new System.ArgumentException($"Field {key} does not exist in d4rkAvatarOptimizer.Settings");
+                throw new System.ArgumentException($"Field {key} does not exist in SynthosFxOptimizer.Settings");
             }
             return EditorPrefs.GetInt(PrefsPrefix + key, field.FieldType == typeof(bool) ? (bool)field.GetValue(defaultSettings) ? 1 : 0 : (int)field.GetValue(defaultSettings));
         }
 
         public static void SetValue(string key, int value)
         {
-            var field = typeof(d4rkAvatarOptimizer.Settings).GetField(key, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+            var field = typeof(SynthosFxOptimizer.Settings).GetField(key, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
             if (field == null)
             {
-                throw new System.ArgumentException($"Field {key} does not exist in d4rkAvatarOptimizer.Settings");
+                throw new System.ArgumentException($"Field {key} does not exist in SynthosFxOptimizer.Settings");
             }
             EditorPrefs.SetInt(PrefsPrefix + key, value);
         }
 
-        public static void ApplyDefaults(d4rkAvatarOptimizer optimizer)
+        public static void ApplyDefaults(SynthosFxOptimizer optimizer)
         {
-            var fields = typeof(d4rkAvatarOptimizer.Settings).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public)
+            var fields = typeof(SynthosFxOptimizer.Settings).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public)
                 .Where(f => f.FieldType == typeof(bool) || f.FieldType == typeof(int)).ToArray();
             foreach (var field in fields)
             {

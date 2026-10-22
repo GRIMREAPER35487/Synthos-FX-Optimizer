@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using System.Collections.Generic;
 using System.Linq;
 using VRC.SDK3.Dynamics.Contact.Components;
@@ -29,35 +29,21 @@ using PackageInfo = UnityEditor.PackageManager.PackageInfo;
 using CompilationPipeline = UnityEditor.Compilation.CompilationPipeline;
 #endif
 
-[HelpURL("https://github.com/d4rkc0d3r/d4rkAvatarOptimizer/blob/main/README.md")]
-[AddComponentMenu("d4rk Avatar Optimizer")]
-public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
+[HelpURL("https://github.com/GRIMREAPER35487/Synthos-FX-Optimizer/blob/main/README.md")]
+[AddComponentMenu("Synthos FX Optimizer")]
+public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
 {
     #region Settings
     [System.Serializable]
     public class Settings
     {
         public bool ApplyOnUpload = true;
-        public bool WritePropertiesAsStaticValues = false;
-        public bool MergeSkinnedMeshes = true;
-        public int MergeSkinnedMeshesWithShaderToggle = 0;
-        public int MergeSkinnedMeshesWithNaNimation = 0;
-        public bool NaNimationAllow3BoneSkinning = false;
-        public bool MergeSkinnedMeshesSeparatedByDefaultEnabledState = true;
-        public bool MergeStaticMeshesAsSkinned = false;
-        public bool AllowMeshDataDuplication = false;
-        public bool MergeDifferentPropertyMaterials = false;
-        public bool MergeSameDimensionTextures = false;
-        public bool MergeMainTex = false;
         public bool OptimizeFXLayer = true;
-        public bool CombineApproximateMotionTimeAnimations = false;
         public bool DeleteUnusedAnimatorParameters = true;
         public bool DisablePhysBonesWhenUnused = true;
         public bool MergeSameRatioBlendShapes = true;
         public bool MMDCompatibility = true;
         public bool DeleteUnusedComponents = true;
-        public bool DeleteUnusedGameObjects = false;
-        public bool UseRingFingerAsFootCollider = false;
     }
 
     public Settings settings = new Settings();
@@ -243,93 +229,40 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
 
     public static bool HasCustomShaderSupport { get => EditorUserBuildSettings.activeBuildTarget == BuildTarget.StandaloneWindows64; }
     public bool ApplyOnUpload { get { return settings.ApplyOnUpload; } set { settings.ApplyOnUpload = value; } }
-    public bool WritePropertiesAsStaticValues {
-        get { return HasCustomShaderSupport && (settings.WritePropertiesAsStaticValues || MergeSkinnedMeshesWithShaderToggle || settings.MergeDifferentPropertyMaterials); }
-        set { settings.WritePropertiesAsStaticValues = value; } }
-    public bool MergeSkinnedMeshes { get { return settings.MergeSkinnedMeshes; } set { settings.MergeSkinnedMeshes = value; } }
-    public bool MergeSkinnedMeshesWithShaderToggle {
-        get { return HasCustomShaderSupport && settings.MergeSkinnedMeshes && settings.MergeSkinnedMeshesWithShaderToggle != 0; }
-        set { settings.MergeSkinnedMeshesWithShaderToggle = value ? 1 : 0; } }
-    public bool MergeSkinnedMeshesWithNaNimation {
-        get { return settings.MergeSkinnedMeshes && settings.MergeSkinnedMeshesWithNaNimation != 0; }
-        set { settings.MergeSkinnedMeshesWithNaNimation = value ? 1 : 0; } }
-    public bool NaNimationAllow3BoneSkinning {
-        get { return MergeSkinnedMeshesWithNaNimation && settings.NaNimationAllow3BoneSkinning; }
-        set { settings.NaNimationAllow3BoneSkinning = value; } }
-    public bool MergeSkinnedMeshesSeparatedByDefaultEnabledState {
-        get { return MergeSkinnedMeshesWithNaNimation && settings.MergeSkinnedMeshesSeparatedByDefaultEnabledState; }
-        set { settings.MergeSkinnedMeshesSeparatedByDefaultEnabledState = value; } }
-    public bool MergeStaticMeshesAsSkinned {
-        get { return settings.MergeSkinnedMeshes && settings.MergeStaticMeshesAsSkinned; }
-        set { settings.MergeStaticMeshesAsSkinned = value; } }
-    public bool MergeDifferentPropertyMaterials {
-        get { return HasCustomShaderSupport && settings.MergeDifferentPropertyMaterials; }
-        set { settings.MergeDifferentPropertyMaterials = value; } }
-    public bool MergeSameDimensionTextures {
-        get { return settings.MergeDifferentPropertyMaterials && settings.MergeSameDimensionTextures; }
-        set { settings.MergeSameDimensionTextures = value; } }
-    public bool MergeMainTex {
-        get { return MergeSameDimensionTextures && settings.MergeMainTex; }
-        set { settings.MergeMainTex = value; } }
+    // Synthos FX Optimizer keeps only the features that measured as real gains (FX layer merging + cleanup).
+    // Mesh/material merging, shader toggles, NaNimation and lock-in are permanently off; the code paths
+    // behind these properties are left in place so upstream fixes can still be merged.
+    public bool WritePropertiesAsStaticValues => false;
+    public bool MergeSkinnedMeshes => false;
+    public bool MergeSkinnedMeshesWithShaderToggle => false;
+    public bool MergeSkinnedMeshesWithNaNimation => false;
+    public bool NaNimationAllow3BoneSkinning => false;
+    public bool MergeSkinnedMeshesSeparatedByDefaultEnabledState => false;
+    public bool MergeStaticMeshesAsSkinned => false;
+    public bool MergeDifferentPropertyMaterials => false;
+    public bool MergeSameDimensionTextures => false;
+    public bool MergeMainTex => false;
+    public bool DeleteUnusedGameObjects => false;
+    public bool CombineApproximateMotionTimeAnimations => false;
+    public bool UseRingFingerAsFootCollider => false;
+    public bool AllowMeshDataDuplication => false;
     public bool MMDCompatibility { get { return settings.MMDCompatibility; } set { settings.MMDCompatibility = value; } }
     public bool DeleteUnusedComponents { get { return settings.DeleteUnusedComponents; } set { settings.DeleteUnusedComponents = value; } }
-    public bool DeleteUnusedGameObjects { get { return settings.DeleteUnusedGameObjects; } set { settings.DeleteUnusedGameObjects = value; } }
     public bool OptimizeFXLayer { get { return settings.OptimizeFXLayer; } set { settings.OptimizeFXLayer = value; } }
     public bool DeleteUnusedAnimatorParameters { get { return settings.DeleteUnusedAnimatorParameters; } set { settings.DeleteUnusedAnimatorParameters = value; } }
-    public bool CombineApproximateMotionTimeAnimations {
-        get { return settings.OptimizeFXLayer && settings.CombineApproximateMotionTimeAnimations; }
-        set { settings.CombineApproximateMotionTimeAnimations = value; } }
     public bool DisablePhysBonesWhenUnused { get { return settings.DisablePhysBonesWhenUnused; } set { settings.DisablePhysBonesWhenUnused = value; } }
     public bool MergeSameRatioBlendShapes { get { return settings.MergeSameRatioBlendShapes; } set { settings.MergeSameRatioBlendShapes = value; } }
-    public bool UseRingFingerAsFootCollider { get { return settings.UseRingFingerAsFootCollider; } set { settings.UseRingFingerAsFootCollider = value; } }
-    public bool AllowMeshDataDuplication { get { return settings.AllowMeshDataDuplication; } set { settings.AllowMeshDataDuplication = value; } }
 
-    public bool CanChangeSetting(string fieldName)
-    {
-        switch (fieldName)
-        {
-            case nameof(WritePropertiesAsStaticValues):
-                return !(MergeSkinnedMeshesWithShaderToggle || settings.MergeDifferentPropertyMaterials);
-            case nameof(MergeSkinnedMeshesWithShaderToggle):
-            case nameof(MergeSkinnedMeshesWithNaNimation):
-            case nameof(MergeStaticMeshesAsSkinned):
-                return settings.MergeSkinnedMeshes;
-            case nameof(NaNimationAllow3BoneSkinning):
-            case nameof(MergeSkinnedMeshesSeparatedByDefaultEnabledState):
-                return MergeSkinnedMeshesWithNaNimation;
-            case nameof(MergeSameDimensionTextures):
-                return settings.MergeDifferentPropertyMaterials;
-            case nameof(MergeMainTex):
-                return MergeSameDimensionTextures;
-            case nameof(CombineApproximateMotionTimeAnimations):
-                return settings.OptimizeFXLayer;
-            default:
-                return true;
-        }
-    }
+    public bool CanChangeSetting(string fieldName) => true;
 
     private static Dictionary<string, string> FieldDisplayName = new Dictionary<string, string>() {
         {nameof(ApplyOnUpload), "Apply on Upload"},
-        {nameof(WritePropertiesAsStaticValues), "Write Properties as Static Values"},
-        {nameof(MergeSkinnedMeshes), "Merge Skinned Meshes"},
-        {nameof(MergeSkinnedMeshesWithShaderToggle), "Use Shader Toggles"},
-        {nameof(MergeSkinnedMeshesWithNaNimation), "NaNimation Toggles"},
-        {nameof(NaNimationAllow3BoneSkinning), "Allow 3 Bone Skinning"},
-        {nameof(MergeSkinnedMeshesSeparatedByDefaultEnabledState), "Keep Default Enabled State"},
-        {nameof(MergeStaticMeshesAsSkinned), "Merge Static Meshes as Skinned"},
-        {nameof(AllowMeshDataDuplication), "Allow Mesh Data Duplication"},
-        {nameof(MergeDifferentPropertyMaterials), "Merge Different Property Materials"},
-        {nameof(MergeSameDimensionTextures), "Merge Same Dimension Textures"},
-        {nameof(MergeMainTex), "Merge MainTex"},
         {nameof(MMDCompatibility), "MMD Compatibility"},
         {nameof(DeleteUnusedComponents), "Delete Unused Components"},
-        {nameof(DeleteUnusedGameObjects), "Delete Unused GameObjects"},
         {nameof(OptimizeFXLayer), "Optimize FX Layer"},
-        {nameof(CombineApproximateMotionTimeAnimations), "Combine Motion Time Approximation"},
         {nameof(DeleteUnusedAnimatorParameters), "Delete Unused Animator Parameters"},
         {nameof(DisablePhysBonesWhenUnused), "Disable Phys Bones When Unused"},
         {nameof(MergeSameRatioBlendShapes), "Merge Same Ratio Blend Shapes"},
-        {nameof(UseRingFingerAsFootCollider), "Use Ring Finger as Foot Collider"},
         {nameof(ShowFXLayerMergeErrors), "Show FX Layer Merge Errors"},
     };
 
@@ -344,77 +277,20 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
 
     private static List<(string name, Dictionary<string, object>)> SettingsPresets = new List<(string name, Dictionary<string, object>)>()
     {
-        ("Standard", new Dictionary<string, object>() {
+        ("Default", new Dictionary<string, object>() {
             {nameof(Settings.ApplyOnUpload), true},
-            {nameof(Settings.WritePropertiesAsStaticValues), false},
-            {nameof(Settings.MergeSkinnedMeshes), true},
-            {nameof(Settings.MergeSkinnedMeshesWithShaderToggle), 0},
-            {nameof(Settings.MergeSkinnedMeshesWithNaNimation), 0},
-            {nameof(Settings.NaNimationAllow3BoneSkinning), false},
-            {nameof(Settings.MergeSkinnedMeshesSeparatedByDefaultEnabledState), true},
-            {nameof(Settings.MergeStaticMeshesAsSkinned), false},
-            {nameof(Settings.MergeDifferentPropertyMaterials), false},
-            {nameof(Settings.MergeSameDimensionTextures), false},
-            {nameof(Settings.MergeMainTex), false},
             {nameof(Settings.OptimizeFXLayer), true},
-            {nameof(Settings.CombineApproximateMotionTimeAnimations), false},
             {nameof(Settings.DeleteUnusedAnimatorParameters), true},
             {nameof(Settings.DisablePhysBonesWhenUnused), true},
             {nameof(Settings.MergeSameRatioBlendShapes), true},
             {nameof(Settings.MMDCompatibility), true},
             {nameof(Settings.DeleteUnusedComponents), true},
-            {nameof(Settings.DeleteUnusedGameObjects), false},
-            {nameof(Settings.AllowMeshDataDuplication), false},
-        }),
-        ("Shader Toggles", new Dictionary<string, object>() {
-            {nameof(Settings.ApplyOnUpload), true},
-            {nameof(Settings.WritePropertiesAsStaticValues), true},
-            {nameof(Settings.MergeSkinnedMeshes), true},
-            {nameof(Settings.MergeSkinnedMeshesWithShaderToggle), 1},
-            {nameof(Settings.MergeSkinnedMeshesWithNaNimation), 1},
-            {nameof(Settings.NaNimationAllow3BoneSkinning), false},
-            {nameof(Settings.MergeSkinnedMeshesSeparatedByDefaultEnabledState), true},
-            {nameof(Settings.MergeStaticMeshesAsSkinned), true},
-            {nameof(Settings.MergeDifferentPropertyMaterials), true},
-            {nameof(Settings.MergeSameDimensionTextures), true},
-            {nameof(Settings.MergeMainTex), false},
-            {nameof(Settings.OptimizeFXLayer), true},
-            {nameof(Settings.CombineApproximateMotionTimeAnimations), false},
-            {nameof(Settings.DeleteUnusedAnimatorParameters), true},
-            {nameof(Settings.DisablePhysBonesWhenUnused), true},
-            {nameof(Settings.MergeSameRatioBlendShapes), true},
-            {nameof(Settings.MMDCompatibility), true},
-            {nameof(Settings.DeleteUnusedComponents), true},
-            {nameof(Settings.DeleteUnusedGameObjects), false},
-            {nameof(Settings.AllowMeshDataDuplication), false},
-        }),
-        ("Aggressive", new Dictionary<string, object>() {
-            {nameof(Settings.ApplyOnUpload), true},
-            {nameof(Settings.WritePropertiesAsStaticValues), true},
-            {nameof(Settings.MergeSkinnedMeshes), true},
-            {nameof(Settings.MergeSkinnedMeshesWithShaderToggle), 1},
-            {nameof(Settings.MergeSkinnedMeshesWithNaNimation), 1},
-            {nameof(Settings.NaNimationAllow3BoneSkinning), true},
-            {nameof(Settings.MergeSkinnedMeshesSeparatedByDefaultEnabledState), false},
-            {nameof(Settings.MergeStaticMeshesAsSkinned), true},
-            {nameof(Settings.MergeDifferentPropertyMaterials), true},
-            {nameof(Settings.MergeSameDimensionTextures), true},
-            {nameof(Settings.MergeMainTex), true},
-            {nameof(Settings.OptimizeFXLayer), true},
-            {nameof(Settings.CombineApproximateMotionTimeAnimations), true},
-            {nameof(Settings.DeleteUnusedAnimatorParameters), true},
-            {nameof(Settings.DisablePhysBonesWhenUnused), true},
-            {nameof(Settings.MergeSameRatioBlendShapes), true},
-            {nameof(Settings.MMDCompatibility), false},
-            {nameof(Settings.DeleteUnusedComponents), true},
-            {nameof(Settings.DeleteUnusedGameObjects), true},
-            {nameof(Settings.AllowMeshDataDuplication), true},
         }),
     };
 
     public List<string> GetPresetNames()
     {
-        return SettingsPresets.Select(x => x.name).Where(x => HasCustomShaderSupport || x != "Shader Toggles").ToList();
+        return SettingsPresets.Select(x => x.name).ToList();
     }
 
     public bool IsPresetActive(string presetName)
@@ -422,16 +298,12 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         var preset = SettingsPresets.Find(x => x.name == presetName).Item2;
         foreach (var entry in preset)
         {
-            var field = typeof(Settings).GetField(entry.Key);
-            if (typeof(bool) == field.FieldType && !field.GetValue(settings).Equals(entry.Value))
-                return false;
-            if (typeof(int) == field.FieldType && (int)entry.Value == 1 && (int)field.GetValue(settings) == 0)
-                return false;
-            if (typeof(int) == field.FieldType && (int)entry.Value == 0 && (int)field.GetValue(settings) == 1)
+            if (!typeof(Settings).GetField(entry.Key).GetValue(settings).Equals(entry.Value))
                 return false;
         }
         return true;
     }
+
     public void SetPreset(string presetName)
     {
         var preset = SettingsPresets.Find(x => x.name == presetName).Item2;
@@ -442,24 +314,13 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         ApplyAutoSettings();
     }
 
-    public static long MaxPolyCountForAutoShaderToggle = 150000;
-
     public void ApplyAutoSettings()
     {
         DoAutoSettings = false;
-        if (settings.MergeSkinnedMeshesWithShaderToggle == 2)
-        {
-            MergeSkinnedMeshesWithShaderToggle = GetPolyCount() < MaxPolyCountForAutoShaderToggle;
-        }
-        if (settings.MergeSkinnedMeshesWithNaNimation == 2)
-        {
-            MergeSkinnedMeshesWithNaNimation = GetPolyCount() < MaxPolyCountForAutoShaderToggle;
-        }
     }
-
     private static readonly FieldInfo PhysBoneColliderGlobalCollisionFlagsField = typeof(VRCPhysBoneColliderBase).GetField("globalCollisionFlags");
 
-    private string trashBinPath = "Assets/d4rkAvatarOptimizer/TrashBin/";
+    private string trashBinPath = "Assets/SynthosFxOptimizer/TrashBin/";
     private HashSet<string> usedBlendShapes = new HashSet<string>();
     private Dictionary<SkinnedMeshRenderer, List<int>> blendShapesToBake = new Dictionary<SkinnedMeshRenderer, List<int>>();
     private Dictionary<AnimationPath, AnimationPath> newAnimationPaths = new Dictionary<AnimationPath, AnimationPath>();
@@ -574,9 +435,9 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
 
     public static (string root, string name, string path) GetTrashBinLocation()
     {
-        var assembly = typeof(d4rkAvatarOptimizer).Assembly;
+        var assembly = typeof(SynthosFxOptimizer).Assembly;
         var asmdefPath = CompilationPipeline.GetAssemblyDefinitionFilePathFromAssemblyName(assembly.GetName().FullName);
-        var inPackageAsmdefPath = "/Editor/d4rkpl4y3r.d4rkavataroptimizer.Editor.asmdef";
+        var inPackageAsmdefPath = "/Editor/Synthos.FxOptimizer.Editor.asmdef";
         var packageInfo = PackageInfo.FindForAssembly(assembly);
         string trashBinRoot;
         if (packageInfo?.source == UnityEditor.PackageManager.PackageSource.Embedded
@@ -590,10 +451,10 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         }
         else
         {
-            trashBinRoot = "Assets/d4rkAvatarOptimizer";
+            trashBinRoot = "Assets/SynthosFxOptimizer";
             if (!AssetDatabase.IsValidFolder(trashBinRoot))
             {
-                AssetDatabase.CreateFolder("Assets", "d4rkAvatarOptimizer");
+                AssetDatabase.CreateFolder("Assets", "SynthosFxOptimizer");
             }
         }
         return (trashBinRoot, "TrashBin", $"{trashBinRoot}/TrashBin/");
@@ -604,15 +465,15 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
     private void ClearTrashBin()
     {
         Profiler.StartSection("ClearTrashBin()");
-        var packageInfo = PackageInfo.FindForAssembly(typeof(d4rkAvatarOptimizer).Assembly);
+        var packageInfo = PackageInfo.FindForAssembly(typeof(SynthosFxOptimizer).Assembly);
         var (trashBinRoot, trashBinName, path) = GetTrashBinLocation();
         trashBinPath = path;
         AssetDatabase.DeleteAsset($"{trashBinRoot}/{trashBinName}");
         AssetDatabase.CreateFolder(trashBinRoot, trashBinName);
         binaryAssetBundlePath = null;
         materialAssetBundlePath = null;
-        log = new (Path.Combine(trashBinPath, "_d4rkAvatarOptimizer.log"));
-        LogToFile($"d4rk Avatar Optimizer v{packageInfo?.version ?? "unknown"}");
+        log = new (Path.Combine(trashBinPath, "_SynthosFxOptimizer.log"));
+        LogToFile($"Synthos FX Optimizer v{packageInfo?.version ?? "unknown"} (based on d4rkAvatarOptimizer by d4rkpl4y3r)");
         LogToFile($"Unity Version: {Application.unityVersion}");
         var vrcPackageInfo = PackageInfo.FindForAssembly(typeof(VRCAvatarDescriptor).Assembly);
         if (vrcPackageInfo != null)
@@ -1204,8 +1065,15 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return cache_ParticleSystemsUsingRenderer[candidate] = new List<ParticleSystem>();
     }
 
-    private List<VRCContactReceiver> cache_MaterialContactReceivers = null;
-    public List<VRCContactReceiver> FindAllMaterialContactReceivers()
+    // Material contact fields only exist in newer VRChat SDKs; read them via reflection so the
+    // optimizer still compiles and runs on SDK 3.10.5 and older (where no receiver can write to materials).
+    private static readonly FieldInfo ContactWriteToMaterialsField = typeof(VRCContactReceiver).GetField("writeToMaterials");
+    private static readonly FieldInfo ContactShaderTargetRenderersField = typeof(VRCContactReceiver).GetField("shaderTargetRenderers");
+    private static bool WritesToMaterials(VRCContactReceiver receiver) => ContactWriteToMaterialsField?.GetValue(receiver) is bool value && value;
+    private static Renderer[] GetShaderTargetRenderers(VRCContactReceiver receiver) => ContactShaderTargetRenderersField?.GetValue(receiver) as Renderer[];
+    private static void SetShaderTargetRenderers(VRCContactReceiver receiver, Renderer[] targets) => ContactShaderTargetRenderersField?.SetValue(receiver, targets);
+
+    private List<VRCContactReceiver> cache_MaterialContactReceivers = null;    public List<VRCContactReceiver> FindAllMaterialContactReceivers()
     {
         if (cache_MaterialContactReceivers != null)
             return cache_MaterialContactReceivers;
@@ -1214,8 +1082,8 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         {
             if (receiver != null &&
                 receiver.receiverType == ContactReceiver.ReceiverType.Proximity &&
-                receiver.writeToMaterials &&
-                receiver.shaderTargetRenderers != null)
+                WritesToMaterials(receiver) &&
+                GetShaderTargetRenderers(receiver) != null)
                 cache_MaterialContactReceivers.Add(receiver);
         }
         return cache_MaterialContactReceivers;
@@ -1229,7 +1097,7 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             cache_MaterialContactReceiversUsingRenderer = new Dictionary<Renderer, HashSet<VRCContactReceiver>>();
             foreach (var receiver in FindAllMaterialContactReceivers())
             {
-                var targets = receiver.shaderTargetRenderers;
+                var targets = GetShaderTargetRenderers(receiver);
                 for (int i = 0; i < targets.Length; i++)
                 {
                     var renderer = targets[i];
@@ -1254,7 +1122,7 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         var result = new List<(VRCContactReceiver receiver, List<Renderer> targets)>();
         foreach (var receiver in FindAllMaterialContactReceivers())
         {
-            var targets = receiver.shaderTargetRenderers?.Where(r => r != null).Distinct().ToList() ?? new List<Renderer>();
+            var targets = GetShaderTargetRenderers(receiver)?.Where(r => r != null).Distinct().ToList() ?? new List<Renderer>();
             result.Add((receiver, targets));
         }
         return result.OrderBy(g => GetPathToRoot(g.receiver)).ToList();
@@ -2179,10 +2047,10 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         if (cache_DisabledMaterial == null)
         {
             cache_DisabledMaterial = new Material(Shader.Find(
-                HasCustomShaderSupport ? "d4rkpl4y3r/Optimizer/DisabledMaterial" : "VRChat/Mobile/Particles/Additive"));
-            cache_DisabledMaterial.name = "d4rkAvatarOptimizer_DisabledMaterial";
+                HasCustomShaderSupport ? "Synthos/FxOptimizer/DisabledMaterial" : "VRChat/Mobile/Particles/Additive"));
+            cache_DisabledMaterial.name = "SynthosFxOptimizer_DisabledMaterial";
             cache_DisabledMaterial.SetShaderPassEnabled("Always", false);
-            CreateUniqueAsset(cache_DisabledMaterial, "d4rkAvatarOptimizer_DisabledMaterial.mat");
+            CreateUniqueAsset(cache_DisabledMaterial, "SynthosFxOptimizer_DisabledMaterial.mat");
         }
         return cache_DisabledMaterial;
     }
@@ -2206,7 +2074,7 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
 
     private AnimationClip FixAnimationClipPaths(AnimationClip clip)
     {
-        if (clip.name == "d4rkAvatarOptimizer_MergedLayers_Constants")
+        if (clip.name == "SynthosFxOptimizer_MergedLayers_Constants")
             return clip;
         var newClip = Instantiate(clip);
         newClip.ClearCurves();
@@ -2285,9 +2153,9 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 if (fixedBinding != binding)
                     changedBindings.Add((binding, fixedBinding));
                 SetFloatCurve(newClip, fixedBinding, curve);
-                if (fixedBinding.propertyName.StartsWithSimple($"material.d4rkAvatarOptimizer") && MergeSkinnedMeshesWithNaNimation) {
+                if (fixedBinding.propertyName.StartsWithSimple($"material.SynthosFxOptimizer") && MergeSkinnedMeshesWithNaNimation) {
                     var otherBinding = fixedBinding;
-                    var match = Regex.Match(fixedBinding.propertyName, @"material\.d4rkAvatarOptimizer(.+)_ArrayIndex\d+(\.[a-z])?");
+                    var match = Regex.Match(fixedBinding.propertyName, @"material\.SynthosFxOptimizer(.+)_ArrayIndex\d+(\.[a-z])?");
                     otherBinding.propertyName = $"material.{match.Groups[1].Value}{match.Groups[2].Value}";
                     SetFloatCurve(newClip, otherBinding, curve);
                     addedBindings.Add(otherBinding);
@@ -4798,7 +4666,7 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                         if (sameAnimatedProperties.Contains(name)) {
                             continue;
                         }
-                        defaultAnimatedProperties.Add(($"d4rkAvatarOptimizer{name}_ArrayIndex{i}", isVector));
+                        defaultAnimatedProperties.Add(($"SynthosFxOptimizer{name}_ArrayIndex{i}", isVector));
                         defaultAnimatedProperties.Add((name, isVector));
                         if (!animatedPropertyOnMeshID.TryGetValue(name, out var animatedOnMesh)) {
                             animatedOnMesh = new bool[allOriginalMeshPaths.Count];
@@ -4807,7 +4675,7 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                         animatedOnMesh[i] = true;
                         if (defaultMaterialForCurrentPath != null && defaultMaterialForCurrentPath.HasProperty(name)) 
                         {
-                            defaultValuesForCurrentPath[$"d4rkAvatarOptimizer{name}_ArrayIndex{i}"] = isVector
+                            defaultValuesForCurrentPath[$"SynthosFxOptimizer{name}_ArrayIndex{i}"] = isVector
                                 ? defaultMaterialForCurrentPath.GetVector(name)
                                 : new Vector4(defaultMaterialForCurrentPath.GetFloat(name), 0, 0, 0);
                         }
@@ -5180,7 +5048,7 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
 
             var props = new MaterialPropertyBlock();
             meshRenderer.GetPropertyBlock(props);
-            int meshCount = props.GetInt("d4rkAvatarOptimizer_CombinedMeshCount");
+            int meshCount = props.GetInt("SynthosFxOptimizer_CombinedMeshCount");
 
             if (MergeSkinnedMeshesWithShaderToggle
                 && fusedAnimatedMaterialProperties.TryGetValue(GetPathToRoot(meshRenderer), out var animatedProperties))
@@ -5202,7 +5070,7 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                         }
                         for (int mID = 0; mID < meshCount; mID++)
                         {
-                            var propArrayName = $"d4rkAvatarOptimizer{propName}_ArrayIndex{mID}";
+                            var propArrayName = $"SynthosFxOptimizer{propName}_ArrayIndex{mID}";
                             if (!mat.HasProperty(propArrayName))
                                 continue;
                             var signal = DoesFXLayerUseWriteDefaults() ? 0.0f : float.NaN;
@@ -5545,7 +5413,7 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
 
             var props = new MaterialPropertyBlock();
             meshRenderer.GetPropertyBlock(props);
-            int meshCount = props.GetInt("d4rkAvatarOptimizer_CombinedMeshCount");
+            int meshCount = props.GetInt("SynthosFxOptimizer_CombinedMeshCount");
             string meshPath = GetPathToRoot(meshRenderer);
 
             var matchedSlots = FindAllMergeAbleMaterials(new [] { meshRenderer });
@@ -6710,7 +6578,7 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                     targetRenderer.GetPropertyBlock(properties);
                 bool isActive = GetRendererDefaultEnabledState(skinnedMesh);
                 properties.SetFloat($"_IsActiveMesh{blobMeshID}", isActive ? 1f : 0f);
-                properties.SetInt("d4rkAvatarOptimizer_CombinedMeshCount", basicMergedMeshes.Count);
+                properties.SetInt("SynthosFxOptimizer_CombinedMeshCount", basicMergedMeshes.Count);
                 var animatedMaterialPropertiesToAdd = new List<string>();
                 if (animatedMaterialProperties.TryGetValue(oldPath, out var animatedProperties)) {
                     foreach (var animPropName in animatedProperties) {
@@ -6726,7 +6594,7 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                             continue;
                         }
                         for (int mID = 0; mID < basicMergedMeshes.Count; mID++) {
-                            string newPropertyName = $"material.d4rkAvatarOptimizer{propName}_ArrayIndex{mID}";
+                            string newPropertyName = $"material.SynthosFxOptimizer{propName}_ArrayIndex{mID}";
                             string path = GetPathToRoot(basicMergedMeshes[mID][0]);
                             var vectorEnd = isVector ? new [] { ".x", ".y", ".z", ".w" } : isColor ? new [] { ".r", ".g", ".b", ".a" } : new [] { "" };
                             foreach (var component in vectorEnd) {
@@ -6854,10 +6722,10 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             }
             foreach (var receiver in GetMaterialContactReceiversUsingRenderer(targetRenderer))
             {
-                var targets = receiver.shaderTargetRenderers;
+                var targets = GetShaderTargetRenderers(receiver);
                 var validTargets = targets.Where(r => r != null).ToArray();
                 if (validTargets.Length != targets.Length)
-                    receiver.shaderTargetRenderers = validTargets;
+                    SetShaderTargetRenderers(receiver, validTargets);
             }
 
             Profiler.StartSection("AssetDatabase.SaveAssets()");
@@ -7140,7 +7008,7 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         var materialContactTargets = new Dictionary<Renderer, List<(VRCContactReceiver receiver, int index)>>();
         foreach (var receiver in FindAllMaterialContactReceivers())
         {
-            var targets = receiver.shaderTargetRenderers;
+            var targets = GetShaderTargetRenderers(receiver);
             for (int i = 0; i < targets.Length; i++)
             {
                 if (targets[i] == null)
@@ -7175,7 +7043,7 @@ public class d4rkAvatarOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             {
                 updatedContactTargets = true;
                 foreach (var (receiver, index) in contactTargetEntries)
-                    receiver.shaderTargetRenderers[index] = skinnedMeshRenderer;
+                    GetShaderTargetRenderers(receiver)[index] = skinnedMeshRenderer;
             }
         }
         if (updatedContactTargets)
