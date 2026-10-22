@@ -688,10 +688,13 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             LogToFile($"- Animator Complexity Score: {animatorLayers.Length * 8 + blendTreeRank}");
             var uniqueClips = animatorControllers.SelectMany(c => c.animationClips).Where(c => c != null).Distinct().ToArray();
             LogToFile($"- Animation Clips: {uniqueClips.Length}");
-            var uniqueBindings = uniqueClips.SelectMany(c => AnimationUtility.GetCurveBindings(c))
-                .Concat(uniqueClips.SelectMany(c => AnimationUtility.GetObjectReferenceCurveBindings(c)))
-                .Distinct().ToArray();
-            LogToFile($"- Unique Curve Bindings: {uniqueBindings.Length}");
+            var uniqueBindings = new HashSet<EditorCurveBinding>();
+            foreach (var clip in uniqueClips)
+            {
+                uniqueBindings.UnionWith(AnimationUtility.GetCurveBindings(clip));
+                uniqueBindings.UnionWith(AnimationUtility.GetObjectReferenceCurveBindings(clip));
+            }
+            LogToFile($"- Unique Curve Bindings: {uniqueBindings.Count}");
         }
 
         var stack = new Stack<Transform>();
@@ -871,14 +874,15 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
     {
         if (t == root)
             return "";
-        string path = t.name;
+        var names = new List<string>() { t.name };
         while ((t = t.parent) != root)
         {
             if (t == null)
                 return null;
-            path = $"{t.name}/{path}";
+            names.Add(t.name);
         }
-        return path;
+        names.Reverse();
+        return string.Join("/", names);
     }
 
     public string GetTransformPathToRoot(Transform t)
@@ -1070,6 +1074,8 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return cache_TargetPathHasAnyMaterialSwap.Contains(path);
     }
 
+    // the hierarchy doesn't change while clips get rewritten, so their paths can be cached for that duration
+    private Dictionary<Transform, string> pathToRootDuringClipFix = null;
     private EditorCurveBinding FixAnimationBindingPath(EditorCurveBinding binding, ref bool changed)
     {
         var newBinding = binding;
@@ -1077,7 +1083,11 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         {
             if (transform != null)
             {
-                var path = GetPathToRoot(transform);
+                string path;
+                if (pathToRootDuringClipFix == null)
+                    path = GetPathToRoot(transform);
+                else if (!pathToRootDuringClipFix.TryGetValue(transform, out path))
+                    pathToRootDuringClipFix[transform] = path = GetPathToRoot(transform);
                 // merged meshes move all their sibling components to a new child object
                 // the general remap in transformFromOldPath points to that new child object
                 // which means transform and renderer animations should still point to the original parent object
@@ -1220,12 +1230,24 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         var changedBindings = new List<(EditorCurveBinding from, EditorCurveBinding to)>();
         float lastUsedKeyframeTime = -1;
         float lastUnusedKeyframeTime = -1;
+        // float curves get collected and written in one SetEditorCurves call, setting them one by one is slow.
+        // a binding set twice keeps its first position and the last curve, same as repeated SetEditorCurve calls
+        var floatBindingsToSet = new List<EditorCurveBinding>();
+        var floatCurvesToSet = new List<AnimationCurve>();
+        var floatBindingIndex = new Dictionary<EditorCurveBinding, int>();
         void SetFloatCurve(AnimationClip clipToSet, EditorCurveBinding bindingToSet, AnimationCurve curveToSet) {
+            float lastKeyTime = curveToSet.length > 0 ? curveToSet[curveToSet.length - 1].time : 0;
             if (IsAnimatableBinding(bindingToSet)) {
-                lastUsedKeyframeTime = Mathf.Max(curveToSet.length > 0 ? curveToSet.keys[^1].time : 0, lastUsedKeyframeTime);
-                AnimationUtility.SetEditorCurve(clipToSet, bindingToSet, curveToSet);
+                lastUsedKeyframeTime = Mathf.Max(lastKeyTime, lastUsedKeyframeTime);
+                if (floatBindingIndex.TryGetValue(bindingToSet, out int index)) {
+                    floatCurvesToSet[index] = curveToSet;
+                } else {
+                    floatBindingIndex[bindingToSet] = floatBindingsToSet.Count;
+                    floatBindingsToSet.Add(bindingToSet);
+                    floatCurvesToSet.Add(curveToSet);
+                }
             } else {
-                lastUnusedKeyframeTime = Mathf.Max(curveToSet.length > 0 ? curveToSet.keys[^1].time : 0, lastUnusedKeyframeTime);
+                lastUnusedKeyframeTime = Mathf.Max(lastKeyTime, lastUnusedKeyframeTime);
                 changed = true;
                 removedBindings.Add(bindingToSet);
             }
@@ -1268,6 +1290,8 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 }
             }
         }
+        if (floatBindingsToSet.Count > 0)
+            AnimationUtility.SetEditorCurves(newClip, floatBindingsToSet.ToArray(), floatCurvesToSet.ToArray());
         foreach (var binding in AnimationUtility.GetObjectReferenceCurveBindings(clip))
         {
             var curve = AnimationUtility.GetObjectReferenceCurve(clip, binding);
@@ -1606,17 +1630,28 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         using (log.IndentScope())
         {
             using var _ = new Profiler.Section("FixAnimationClipPaths()");
-            foreach (var clip in animations)
+            pathToRootDuringClipFix = new();
+            try
             {
-                var fixedClip = FixAnimationClipPaths(clip);
-                fixedMotions[(clip, false)] = fixedClip;
-                fixedMotions[(clip, true)] = fixedClip;
+                foreach (var clip in animations)
+                {
+                    var fixedClip = FixAnimationClipPaths(clip);
+                    fixedMotions[(clip, false)] = fixedClip;
+                    fixedMotions[(clip, true)] = fixedClip;
+                }
             }
+            finally
+            {
+                pathToRootDuringClipFix = null;
+            }
+            // only clips that already have a reference pose clip can get rewritten below, so skip reading the settings of all others every pass
+            var referencePoseKeys = fixedMotions.Keys.Where(key => !key.stateUsesWriteDefaults
+                && AnimationUtility.GetAnimationClipSettings(fixedMotions[key] as AnimationClip).additiveReferencePoseClip != null).ToList();
             bool changedReferencePoseClip = true;
             while (changedReferencePoseClip)
             {
                 changedReferencePoseClip = false;
-                foreach (var key in fixedMotions.Keys.Where(key => !key.stateUsesWriteDefaults).ToList())
+                foreach (var key in referencePoseKeys)
                 {
                     var sourceClip = key.motion as AnimationClip;
                     var currentFixedClip = fixedMotions[key] as AnimationClip;
@@ -2752,6 +2787,25 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return new HashSet<string>(usedBlendShapes);
     }
 
+    // FindMergeableBlendShapes runs once per mesh and scans every clip each time, so read the blend shape curves only once.
+    // the source clips don't change before FixAllAnimationPaths, which writes new clips instead.
+    private Dictionary<AnimationClip, List<(string path, AnimationCurve curve)>> cache_BlendShapeCurvesInClip = null;
+    private List<(string path, AnimationCurve curve)> GetBlendShapeCurvesInClip(AnimationClip clip)
+    {
+        cache_BlendShapeCurvesInClip ??= new();
+        if (cache_BlendShapeCurvesInClip.TryGetValue(clip, out var result))
+            return result;
+        result = new();
+        foreach (var binding in AnimationUtility.GetCurveBindings(clip))
+        {
+            if (binding.type != typeof(SkinnedMeshRenderer)
+                || !binding.propertyName.StartsWithSimple("blendShape."))
+                continue;
+            result.Add(($"{binding.path}/{binding.propertyName}", AnimationUtility.GetEditorCurve(clip, binding)));
+        }
+        return cache_BlendShapeCurvesInClip[clip] = result;
+    }
+
     public List<List<(string blendshape, float value)>> FindMergeableBlendShapes(IEnumerable<Renderer> mergedMeshBlob)
     {
         var avDescriptor = GetAvatarDescriptor();
@@ -2828,18 +2882,13 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         var hasEntryInMergeableBlendShapes = new HashSet<int>();
         foreach (var clip in GetAllUsedAnimationClips())
         {
-            var blendShapes = new List<(int blendShapeID, EditorCurveBinding binding)>();
+            var blendShapes = new List<(int blendShapeID, AnimationCurve curve)>();
             var keyframes = new HashSet<float>();
-            foreach (var binding in AnimationUtility.GetCurveBindings(clip))
+            foreach (var (path, curve) in GetBlendShapeCurvesInClip(clip))
             {
-                if (binding.type != typeof(SkinnedMeshRenderer)
-                    || !binding.propertyName.StartsWithSimple("blendShape."))
-                    continue;
-                var path = $"{binding.path}/{binding.propertyName}";
                 if (!validPaths.Contains(path))
                     continue;
-                blendShapes.Add((GetBlendShapeID(path), binding));
-                var curve = AnimationUtility.GetEditorCurve(clip, binding);
+                blendShapes.Add((GetBlendShapeID(path), curve));
                 keyframes.UnionWith(curve.keys.Select(x => x.time));
             }
             foreach (var key in keyframes)
@@ -2847,8 +2896,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 var blendShapeValues = new Dictionary<int, float>();
                 foreach (var blendShape in blendShapes)
                 {
-                    var curve = AnimationUtility.GetEditorCurve(clip, blendShape.binding);
-                    blendShapeValues[blendShape.blendShapeID] = curve.Evaluate(key);
+                    blendShapeValues[blendShape.blendShapeID] = blendShape.curve.Evaluate(key);
                 }
                 NormalizeBlendShapeValues(blendShapeValues);
                 if (!ratiosDict.Any(list => list.SequenceEqual(blendShapeValues)))
@@ -3779,17 +3827,18 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
 
                 int meshVertexCount = mesh.vertexCount;
                 int newMeshVertexCount = newMesh.vertexCount;
+                // reused for every frame: both get fully overwritten and AddBlendShapeFrame copies the data
+                var sourceDeltaVertices = new Vector3[meshVertexCount];
+                var sourceDeltaNormals = new Vector3[meshVertexCount];
+                var sourceDeltaTangents = new Vector3[meshVertexCount];
+                var targetDeltaVertices = new Vector3[newMeshVertexCount];
+                var targetDeltaNormals = new Vector3[newMeshVertexCount];
+                var targetDeltaTangents = new Vector3[newMeshVertexCount];
                 for (int i = 0; i < mesh.blendShapeCount; i++)
                 {
                     for (int j = 0; j < mesh.GetBlendShapeFrameCount(i); j++)
                     {
-                        var sourceDeltaVertices = new Vector3[meshVertexCount];
-                        var sourceDeltaNormals = new Vector3[meshVertexCount];
-                        var sourceDeltaTangents = new Vector3[meshVertexCount];
                         mesh.GetBlendShapeFrameVertices(i, j, sourceDeltaVertices, sourceDeltaNormals, sourceDeltaTangents);
-                        var targetDeltaVertices = new Vector3[newMeshVertexCount];
-                        var targetDeltaNormals = new Vector3[newMeshVertexCount];
-                        var targetDeltaTangents = new Vector3[newMeshVertexCount];
                         for (int k = 0; k < newMeshVertexCount; k++)
                         {
                             var oldIndex = targetOldVertexIndex[k];
@@ -4428,6 +4477,24 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 }
                 LogToFile($"- Kept face tracking blendshape '{name}' on '{newPath}' from {sources.Count} meshes");
             }
+            // delta buffers are reused for every blend shape frame since AddBlendShapeFrame copies the data.
+            // GetBlendShapeFrameVertices overwrites the whole source buffer, the target buffers get cleared before use
+            var targetDeltaVertices = new Vector3[combinedMeshVertexCount];
+            var targetDeltaNormals = new Vector3[combinedMeshVertexCount];
+            var targetDeltaTangents = new Vector3[combinedMeshVertexCount];
+            void ClearTargetDeltas()
+            {
+                Array.Clear(targetDeltaVertices, 0, combinedMeshVertexCount);
+                Array.Clear(targetDeltaNormals, 0, combinedMeshVertexCount);
+                Array.Clear(targetDeltaTangents, 0, combinedMeshVertexCount);
+            }
+            var sourceDeltaBuffers = new Dictionary<int, (Vector3[] vertices, Vector3[] normals, Vector3[] tangents)>();
+            (Vector3[] vertices, Vector3[] normals, Vector3[] tangents) GetSourceDeltaBuffers(int vertexCount)
+            {
+                if (!sourceDeltaBuffers.TryGetValue(vertexCount, out var buffers))
+                    sourceDeltaBuffers[vertexCount] = buffers = (new Vector3[vertexCount], new Vector3[vertexCount], new Vector3[vertexCount]);
+                return buffers;
+            }
             foreach (var mergedBlendShapes in allMergedBlendShapes)
             {
                 if (mergedBlendShapes.Count == 1)
@@ -4449,13 +4516,9 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                     for (int j = 0; j < mesh.GetBlendShapeFrameCount(blendShapeID); j++)
                     {
                         int meshVertexCount = mesh.vertexCount;
-                        var sourceDeltaVertices = new Vector3[meshVertexCount];
-                        var sourceDeltaNormals = new Vector3[meshVertexCount];
-                        var sourceDeltaTangents = new Vector3[meshVertexCount];
+                        var (sourceDeltaVertices, sourceDeltaNormals, sourceDeltaTangents) = GetSourceDeltaBuffers(meshVertexCount);
                         mesh.GetBlendShapeFrameVertices(blendShapeID, j, sourceDeltaVertices, sourceDeltaNormals, sourceDeltaTangents);
-                        var targetDeltaVertices = new Vector3[combinedMeshVertexCount];
-                        var targetDeltaNormals = new Vector3[combinedMeshVertexCount];
-                        var targetDeltaTangents = new Vector3[combinedMeshVertexCount];
+                        ClearTargetDeltas();
                         for (int k = 0; k < meshVertexCount; k++)
                         {
                             int vertIndex = k + vertexOffset[meshID];
@@ -4475,9 +4538,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                     AddAnimationPathChange(
                         (oldPath, "blendShape." + oldName, typeof(SkinnedMeshRenderer)),
                         (newPath, "blendShape." + name, typeof(SkinnedMeshRenderer)));
-                    var targetDeltaVertices = new Vector3[combinedMeshVertexCount];
-                    var targetDeltaNormals = new Vector3[combinedMeshVertexCount];
-                    var targetDeltaTangents = new Vector3[combinedMeshVertexCount];
+                    ClearTargetDeltas();
                     LogToFile($"- Merging {mergedBlendShapes.Count} blendshapes into {name}");
                     bool first = true;
                     foreach (var toMerge in mergedBlendShapes)
@@ -4498,9 +4559,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                             first = false;
                         }
                         int meshVertexCount = mesh.vertexCount;
-                        var sourceDeltaVertices = new Vector3[meshVertexCount];
-                        var sourceDeltaNormals = new Vector3[meshVertexCount];
-                        var sourceDeltaTangents = new Vector3[meshVertexCount];
+                        var (sourceDeltaVertices, sourceDeltaNormals, sourceDeltaTangents) = GetSourceDeltaBuffers(meshVertexCount);
                         mesh.GetBlendShapeFrameVertices(blendShapeID, 0, sourceDeltaVertices, sourceDeltaNormals, sourceDeltaTangents);
                         for (int k = 0; k < meshVertexCount; k++)
                         {
@@ -4613,11 +4672,13 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 if (validTargets.Length != targets.Length)
                     SetShaderTargetRenderers(receiver, validTargets);
             }
-
+        }
+        // saving once after all meshes instead of after every mesh
+        if (combinableSkinnedMeshList.Length > 0)
+        {
             Profiler.StartSection("AssetDatabase.SaveAssets()");
             AssetDatabase.SaveAssets();
             Profiler.EndSection();
-
         }
         GetRootTransform().SetPositionAndRotation(originalRootPosition, originalRootRotation);
 

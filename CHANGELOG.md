@@ -1,4 +1,12 @@
 # Synthos FX Optimizer
+## v1.0.0-beta.4
+### Changes
+* Optimizing is about a quarter faster (4.2s -> 3.2s on the test avatar). The result is identical.
+  * Animation clips get their curves written in one batch instead of one by one.
+  * Blend shape curves get read once per clip instead of once per keyframe and mesh.
+  * Blend shape delta buffers get reused instead of allocated per frame.
+  * Assets get saved once after all meshes instead of after every mesh.
+
 ## v1.0.0-beta.3
 ### Changes
 * Play mode now optimizes every avatar in the scene instead of only the first one. Each avatar gets its own TrashBin subfolder so later avatars no longer delete the assets of earlier ones.
