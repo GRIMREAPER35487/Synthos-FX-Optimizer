@@ -88,6 +88,20 @@ namespace d4rkpl4y3r.AvatarOptimizer
             return transitions;
         }
 
+        // Unity's AddTransition/AddCondition/AddStateMachineBehaviour helpers record a full undo snapshot of the
+        // state or state machine they change. Nobody can undo the build copy, and the undo history keeps growing
+        // across builds in one editor session, making every following build slower (batch uploads especially).
+        // pushUndo is internal; if a Unity version doesn't have it, the copy just records undo like before.
+        private static readonly System.Reflection.PropertyInfo[] pushUndoProperties = new[] {
+                typeof(AnimatorState), typeof(AnimatorStateMachine), typeof(AnimatorTransitionBase)
+            }.Select(t => t.GetProperty("pushUndo", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
+            .ToArray();
+        private static void DisableUndo(Object o)
+        {
+            var property = pushUndoProperties.FirstOrDefault(p => p != null && p.DeclaringType.IsInstanceOfType(o));
+            property?.SetValue(o, false);
+        }
+
         private void AddToAsset(Object o)
         {
             using var _ = new Profiler.Section("AnimatorOptimizer.AddToAsset()");
@@ -479,7 +493,8 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 syncedLayerIndex = isFxLayer && fxLayerMap.TryGetValue(old.syncedLayerIndex, out int newLayerIndex) ? newLayerIndex : old.syncedLayerIndex,
                 stateMachine = CloneStateMachine(old.stateMachine, old.name)
             };
-            CloneTransitions(old.stateMachine, n.stateMachine);
+            using (new Profiler.Section("AnimatorOptimizer.CloneTransitions"))
+                CloneTransitions(old.stateMachine, n.stateMachine);
             return n;
         }
 
@@ -514,6 +529,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     position = old.position,
                     state = CloneAnimatorState(old.state)
                 };
+                using var _ = new Profiler.Section("AnimatorOptimizer.CloneBehaviours");
                 foreach (var oldb in old.state.behaviours)
                 {
                     var behaviour = n.state.AddStateMachineBehaviour(oldb.GetType());
@@ -539,11 +555,13 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 stateMachines = old.stateMachines.Select(x => CloneChildStateMachine(x)).ToArray(),
                 states = old.states.Select(x => CloneChildAnimatorState(x)).ToArray()
             };
+            DisableUndo(n);
             stateMachineMap[old] = n;
             
             AddToAsset(n);
             n.defaultState = FindMatchingState(old.defaultState);
 
+            using var _ = new Profiler.Section("AnimatorOptimizer.CloneBehaviours");
             foreach (var oldb in old.behaviours)
             {
                 var behaviour = n.AddStateMachineBehaviour(oldb.GetType());
@@ -564,6 +582,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
             Motion motion = old.motion;
             if (motion is BlendTree oldTree)
             {
+                using var _ = new Profiler.Section("AnimatorOptimizer.CloneBlendTree");
                 var tree = CloneBlendTree(null, oldTree);
                 motion = tree;
                 // need to save the blend tree into the animator
@@ -591,6 +610,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 timeParameterActive = old.timeParameterActive,
                 writeDefaultValues = old.writeDefaultValues
             };
+            DisableUndo(n);
             if (old.cycleOffsetParameterActive) MarkParameterUsed(old.cycleOffsetParameter);
             if (old.mirrorParameterActive) MarkParameterUsed(old.mirrorParameter);
             if (old.speedParameterActive) MarkParameterUsed(old.speedParameter);
@@ -654,7 +674,8 @@ namespace d4rkpl4y3r.AvatarOptimizer
             }
             pastedTree.children = children;
 
-            CopyNormalizedBlendValuesProperty(oldTree, pastedTree);
+            using (new Profiler.Section("AnimatorOptimizer.CopyNormalizedBlendValues"))
+                CopyNormalizedBlendValuesProperty(oldTree, pastedTree);
 
             return pastedTree;
         }
@@ -875,6 +896,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
         }
 
         private void AddCondition(AnimatorTransitionBase transition, AnimatorCondition condition) {
+            using var _ = new Profiler.Section("AnimatorOptimizer.AddCondition");
             MarkParameterUsed(condition.parameter);
             if (boolsToChangeToFloat.Contains(condition.parameter)) {
                 var mode = condition.mode == AnimatorConditionMode.If ? AnimatorConditionMode.Greater : AnimatorConditionMode.Less;
@@ -893,6 +915,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
 
         private void ApplyTransitionSettings(AnimatorStateTransition transition, AnimatorStateTransition newTransition)
         {
+            DisableUndo(newTransition);
             newTransition.canTransitionToSelf = transition.canTransitionToSelf;
             newTransition.duration = transition.duration;
             newTransition.exitTime = transition.exitTime;
@@ -913,6 +936,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
 
         private void ApplyTransitionSettings(AnimatorTransition transition, AnimatorTransition newTransition)
         {
+            DisableUndo(newTransition);
             newTransition.hideFlags = transition.hideFlags;
             newTransition.isExit = transition.isExit;
             newTransition.mute = transition.mute;

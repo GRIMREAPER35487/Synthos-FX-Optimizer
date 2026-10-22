@@ -1,4 +1,12 @@
 # Synthos FX Optimizer
+## v1.0.0-beta.5
+### Changes
+* Builds no longer get slower the more avatars you build in one editor session (batch uploads). Copying the animator layers recorded undo history for every transition and condition, which kept growing; it is now turned off for the build copy. On a large test avatar copying transitions went from up to 1.6s to ~0.05s per build.
+* Optimizing is faster again (~3s -> ~1.1s on the same avatar by the third build). The result is the same.
+  * Animation clips get collected from the state graph directly instead of the slow `AnimatorController.animationClips`.
+  * Blend trees that don't change are reused, and the optimizer's own copies get updated in place instead of copied a second time. The generated controller no longer contains unused duplicate blend trees.
+* More detailed sections in the profiler output of the log.
+
 ## v1.0.0-beta.4
 ### Changes
 * Optimizing is about a quarter faster (4.2s -> 3.2s on the test avatar). The result is identical.

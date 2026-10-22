@@ -1,7 +1,7 @@
 {
   "name": "com.synthos.fx-optimizer",
   "displayName": "Synthos FX Optimizer",
-  "version": "1.0.0-beta.4",
+  "version": "1.0.0-beta.5",
   "unity": "2022.3",
   "description": "Merges and cleans up the FX layer of VRChat avatars on upload. Trimmed fork of d4rkAvatarOptimizer by d4rkpl4y3r.",
   "dependencies": {},

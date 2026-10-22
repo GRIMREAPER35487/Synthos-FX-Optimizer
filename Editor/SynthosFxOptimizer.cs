@@ -679,21 +679,27 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                     return tree.blendType == BlendTreeType.Simple1D ? worst * 2 : worst * 3;
                 }
             }
+            Profiler.StartSection("LogAvatarStats.BlendTreeRank");
             int blendTreeRank = animatorLayers.Sum(l => l == null || l.stateMachine == null ? 0
                 : l.stateMachine.EnumerateAllStates().Select(s => CalculateBlendTreePerfRank(s.motion as BlendTree)).Aggregate(0, (a, b) => a > b ? a : b));
+            Profiler.EndSection();
             LogToFile($"- Blend Tree Perf Rank: {blendTreeRank}");
             // a single layer with a simple toggle is approximately 4 times as expensive a simple 1d blend tree inside a direct blend tree
             // from: https://vrc.school/docs/Other/Benchmarks/#direct-blend-trees
             // 1d inside direct is 2 score so the layer is 8 score
             LogToFile($"- Animator Complexity Score: {animatorLayers.Length * 8 + blendTreeRank}");
-            var uniqueClips = animatorControllers.SelectMany(c => c.animationClips).Where(c => c != null).Distinct().ToArray();
+            Profiler.StartSection("LogAvatarStats.Clips");
+            var uniqueClips = animatorControllers.SelectMany(GetAnimationClipsInStateGraph).Distinct().ToArray();
+            Profiler.EndSection();
             LogToFile($"- Animation Clips: {uniqueClips.Length}");
+            Profiler.StartSection("LogAvatarStats.Bindings");
             var uniqueBindings = new HashSet<EditorCurveBinding>();
             foreach (var clip in uniqueClips)
             {
                 uniqueBindings.UnionWith(AnimationUtility.GetCurveBindings(clip));
                 uniqueBindings.UnionWith(AnimationUtility.GetObjectReferenceCurveBindings(clip));
             }
+            Profiler.EndSection();
             LogToFile($"- Unique Curve Bindings: {uniqueBindings.Count}");
         }
 
@@ -1379,6 +1385,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return clip;
     }
 
+    private readonly HashSet<BlendTree> reusedBlendTreeCopies = new();
     private Motion FixMotion(Motion motion, Dictionary<(Motion motion, bool stateUsesWriteDefaults), Motion> fixedMotions, string assetPath, bool stateUsesWriteDefaults)
     {
         if (motion == null)
@@ -1427,6 +1434,30 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 }
             }
 
+            // Creating ~thousands of new blend trees is slow, so avoid it where the result would be the same:
+            // a tree whose children didn't change is returned as is, and a tree the AnimatorOptimizer already copied
+            // into this controller gets its children replaced in place. Those copies are only reachable from one
+            // state, so nothing else sees the change. If one were reached twice, it gets rebuilt like before.
+            var oldChildren = oldTree.children;
+            bool childrenChanged = oldChildren.Length != childNodes.Length;
+            for (int j = 0; !childrenChanged && j < childNodes.Length; j++)
+                childrenChanged = oldChildren[j].motion != childNodes[j].motion;
+            bool ownedCopy = AssetDatabase.GetAssetPath(oldTree) == assetPath;
+            if (!ownedCopy || reusedBlendTreeCopies.Add(oldTree))
+            {
+                if (!childrenChanged)
+                    return fixedMotions[(motion, stateUsesWriteDefaults)] = oldTree;
+                if (ownedCopy)
+                {
+                    oldTree.children = childNodes;
+                    EditorUtility.SetDirty(oldTree);
+                    return fixedMotions[(motion, stateUsesWriteDefaults)] = oldTree;
+                }
+            }
+            else
+            {
+                LogToFile($"- Warning: blend tree '{oldTree.name}' is used by more than one state, rebuilding it");
+            }
             var newTree = new BlendTree();
             newTree.name = oldTree.name;
             newTree.blendType = oldTree.blendType;
@@ -1438,7 +1469,8 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             newTree.children = childNodes;
             fixedMotions[(motion, stateUsesWriteDefaults)] = newTree;
             newTree.hideFlags = HideFlags.HideInHierarchy;
-            AnimatorOptimizer.CopyNormalizedBlendValuesProperty(oldTree, newTree);
+            using (new Profiler.Section("FixMotion.CopyNormalizedBlendValues"))
+                AnimatorOptimizer.CopyNormalizedBlendValuesProperty(oldTree, newTree);
             Profiler.StartSection("AssetDatabase.AddObjectToAsset()");
             AssetDatabase.AddObjectToAsset(newTree, assetPath);
             Profiler.EndSection();
@@ -1492,6 +1524,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         if (avDescriptor == null)
             return;
         
+        reusedBlendTreeCopies.Clear();
         int totalControllerCount = avDescriptor.baseAnimationLayers.Length + avDescriptor.specialAnimationLayers.Length;
         var layerCopyPaths = new string[totalControllerCount];
         var optimizedControllers = new AnimatorController[totalControllerCount];
@@ -1502,7 +1535,9 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         if (OptimizeFXLayer && GetFXLayer() != null)
         {
             var nonErrors = new HashSet<string>() {"toggle", "motion time", "blend tree", "multi toggle"};
-            var analysisResult = AnalyzeFXLayerMergeAbility();
+            List<List<string>> analysisResult;
+            using (new Profiler.Section("AnalyzeFXLayerMergeAbility()"))
+                analysisResult = AnalyzeFXLayerMergeAbility();
             var uselessLayers = FindUselessFXLayers();
             List<(int layerIndex, List<string> errors)> layersWithErrors = new();
             int currentLayer = 0;
@@ -1617,13 +1652,16 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         Profiler.EndSection();
 
         var animations = new HashSet<AnimationClip>();
-        for (int i = 0; i < optimizedControllers.Length; i++)
+        using (new Profiler.Section("FixAllAnimationPaths.CollectClips"))
         {
-            if (optimizedControllers[i] == null)
-                continue;
-            animations.UnionWith(optimizedControllers[i].animationClips);
+            for (int i = 0; i < optimizedControllers.Length; i++)
+            {
+                if (optimizedControllers[i] == null)
+                    continue;
+                animations.UnionWith(GetAnimationClipsInStateGraph(optimizedControllers[i]));
+            }
+            AddReferencePoseClips(animations);
         }
-        AddReferencePoseClips(animations);
 
         var fixedMotions = new Dictionary<(Motion motion, bool stateUsesWriteDefaults), Motion>();
         LogToFile($"Fixing animation paths in {animations.Count} animation clips");
@@ -1688,12 +1726,15 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             LogToFile($"- '{newController.name}'");
             using var __ = log.IndentScope();
 
+            Profiler.StartSection("FixAllAnimationPaths.GetStates");
             var layers = newController.layers;
             bool applyLayerChanges = false;
             var states = layers.SelectMany(layer => layer.stateMachine.EnumerateAllStates()).ToArray();
+            Profiler.EndSection();
 
             LogToFile($"- Fixing motions in {states.Length} states");
             using (log.IndentScope())
+            using (new Profiler.Section("FixMotion()"))
             foreach (var state in states)
             {
                 state.motion = FixMotion(state.motion, fixedMotions, layerCopyPaths[i], state.writeDefaultValues);
@@ -1712,6 +1753,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 }
             }
 
+            using var ___ = new Profiler.Section("FixAllAnimationPaths.BehavioursMasksLayers");
             foreach (var behavior in layers.SelectMany(layer => layer.stateMachine.EnumerateAllBehaviours()))
             {
                 if (behavior is VRC.SDKBase.VRC_AnimatorPlayAudio playAudio)
@@ -1745,7 +1787,8 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 newController.layers = layers;
             }
         }
-        Profiler.StartSection("AssetDatabase.SaveAssets()");
+        reusedBlendTreeCopies.Clear();
+        Profiler.StartSection("AssetDatabase.SaveAssets() end");
         AssetDatabase.SaveAssets();
         Profiler.EndSection();
     }
@@ -2359,6 +2402,30 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         {
             AddReferencePoseClips(clip);
         }
+    }
+
+    // Same clips as AnimatorController.animationClips, which takes ~100ms on big controllers. Order differs.
+    private static HashSet<AnimationClip> GetAnimationClipsInStateGraph(AnimatorController controller)
+    {
+        var clips = new HashSet<AnimationClip>();
+        void AddMotion(Motion motion)
+        {
+            if (motion is AnimationClip clip)
+                clips.Add(clip);
+            else if (motion is BlendTree tree)
+                foreach (var child in tree.children)
+                    AddMotion(child.motion);
+        }
+        foreach (var layer in controller.layers)
+        {
+            if (layer.stateMachine != null)
+                foreach (var state in layer.stateMachine.EnumerateAllStates())
+                    AddMotion(state.motion);
+            if (layer.syncedLayerIndex >= 0)
+                foreach (var (_, motion) in layer.EnumerateAllMotionOverrides())
+                    AddMotion(motion);
+        }
+        return clips;
     }
 
     private HashSet<AnimationClip> cache_GetAllUsedAnimationClips = null;
@@ -4676,7 +4743,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         // saving once after all meshes instead of after every mesh
         if (combinableSkinnedMeshList.Length > 0)
         {
-            Profiler.StartSection("AssetDatabase.SaveAssets()");
+            Profiler.StartSection("AssetDatabase.SaveAssets() meshes");
             AssetDatabase.SaveAssets();
             Profiler.EndSection();
         }
