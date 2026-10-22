@@ -1,4 +1,9 @@
 # Synthos FX Optimizer
+## v1.0.0-beta.3
+### Changes
+* Play mode now optimizes every avatar in the scene instead of only the first one. Each avatar gets its own TrashBin subfolder so later avatars no longer delete the assets of earlier ones.
+* The open log button opens the newest play mode log when there is no upload log.
+
 ## v1.0.0-beta.2
 ### Changes
 * FX layers are no longer merged when they are additive, animate transform rotations, or have an avatar mask while animating transforms or muscles. These could change how the avatar behaves after merging.

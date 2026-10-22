@@ -18,11 +18,11 @@ namespace d4rkpl4y3r.AvatarOptimizer
         public int callbackOrder => -1025;
         #endif
 
-        static private bool didRunInPlayMode = false;
+        static private int playModeAvatarCount = 0;
         [InitializeOnEnterPlayMode]
         static void OnEnterPlaymodeInEditor(EnterPlayModeOptions options)
         {
-            didRunInPlayMode = false;
+            playModeAvatarCount = 0;
         }
 
         public bool OnPreprocessAvatar(GameObject avatarGameObject)
@@ -56,22 +56,13 @@ namespace d4rkpl4y3r.AvatarOptimizer
             }
             try
             {
-                if (Application.isPlaying)
+                if (Application.isPlaying && !AvatarOptimizerSettings.DoOptimizeInPlayMode)
                 {
-                    if (!AvatarOptimizerSettings.DoOptimizeInPlayMode)
-                    {
-                        Debug.Log($"SynthosFxOptimizer skipping avatar {avatarGameObject.name} because \"Optimize in Play Mode\" is disabled.");
-                        return true;
-                    }
-                    else if (didRunInPlayMode)
-                    {
-                        Debug.LogWarning($"SynthosFxOptimizer skipping avatar {avatarGameObject.name} because it has already optimized an avatar in this play session.");
-                        return true;
-                    }
+                    Debug.Log($"SynthosFxOptimizer skipping avatar {avatarGameObject.name} because \"Optimize in Play Mode\" is disabled.");
+                    return true;
                 }
-                didRunInPlayMode = Application.isPlaying;
                 Debug.Log($"SynthosFxOptimizer optimizing avatar {avatarGameObject.name}.");
-                optimizer.Optimize();
+                optimizer.Optimize(Application.isPlaying ? ++playModeAvatarCount : 0);
                 return true;
             }
             catch (Exception e)

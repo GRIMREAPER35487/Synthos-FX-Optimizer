@@ -238,6 +238,14 @@ namespace d4rkpl4y3r.AvatarOptimizer
         {
             var trashBinPath = SynthosFxOptimizer.GetTrashBinLocation().path;
             var logFilePath = trashBinPath + "_SynthosFxOptimizer.log";
+            // in play mode every avatar logs into its own subfolder, so fall back to the newest of those
+            if (!File.Exists(logFilePath) && Directory.Exists(trashBinPath))
+            {
+                var newest = Directory.GetFiles(trashBinPath, "_SynthosFxOptimizer.log", SearchOption.AllDirectories)
+                    .OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
+                if (newest != null)
+                    logFilePath = newest.Replace('\\', '/');
+            }
             var logAsset = AssetDatabase.LoadAssetAtPath<DefaultAsset>(logFilePath);
             if (logAsset != null)
             {

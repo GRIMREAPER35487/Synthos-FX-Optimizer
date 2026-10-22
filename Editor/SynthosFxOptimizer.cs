@@ -121,7 +121,9 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
 #if UNITY_EDITOR
     private bool isOptimizing = false;
 
-    public void Optimize()
+    // playModeAvatarIndex > 0 means this is the n-th avatar optimized in the current play session.
+    // Each of those gets its own TrashBin subfolder so later avatars don't delete the assets of earlier ones.
+    public void Optimize(int playModeAvatarIndex = 0)
     {
         using var _ = new InvariantCultureScope();
         try
@@ -130,7 +132,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             Profiler.enabled = true;
             Profiler.Reset();
             DisplayProgressBar("Clear TrashBin Folder", 0.01f);
-            ClearTrashBin();
+            ClearTrashBin(playModeAvatarIndex);
             Profiler.StartSection("ClearCaches()");
             optimizedSlotSwapMaterials.Clear();
             newAnimationPaths.Clear();
@@ -394,14 +396,23 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
 
     public static d4rkpl4y3r.AvatarOptimizer.Util.Logger log = null;
 
-    private void ClearTrashBin()
+    private void ClearTrashBin(int playModeAvatarIndex)
     {
         Profiler.StartSection("ClearTrashBin()");
         var packageInfo = PackageInfo.FindForAssembly(typeof(SynthosFxOptimizer).Assembly);
         var (trashBinRoot, trashBinName, path) = GetTrashBinLocation();
         trashBinPath = path;
-        AssetDatabase.DeleteAsset($"{trashBinRoot}/{trashBinName}");
-        AssetDatabase.CreateFolder(trashBinRoot, trashBinName);
+        if (playModeAvatarIndex <= 1 || !AssetDatabase.IsValidFolder($"{trashBinRoot}/{trashBinName}"))
+        {
+            AssetDatabase.DeleteAsset($"{trashBinRoot}/{trashBinName}");
+            AssetDatabase.CreateFolder(trashBinRoot, trashBinName);
+        }
+        if (playModeAvatarIndex > 0)
+        {
+            var subFolder = SanitizeName($"{playModeAvatarIndex}_{GetRootTransform().name.Replace("(Clone)", "").Trim()}");
+            AssetDatabase.CreateFolder($"{trashBinRoot}/{trashBinName}", subFolder);
+            trashBinPath = $"{trashBinRoot}/{trashBinName}/{subFolder}/";
+        }
         binaryAssetBundlePath = null;
         materialAssetBundlePath = null;
         log = new (Path.Combine(trashBinPath, "_SynthosFxOptimizer.log"));

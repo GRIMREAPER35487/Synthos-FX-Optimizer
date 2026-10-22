@@ -29,6 +29,8 @@ So everything except the FX layer work is permanently off. This also removes mos
 
 Global settings are under `Tools/Synthos/FX Optimizer Settings`.
 
+With VRCFury the optimizer also runs when you enter play mode, on every avatar in the scene. Each avatar adds its optimization time to entering play mode, so disable avatars you aren't testing if that gets slow, or turn off `Optimize in Play Mode` in the global settings.
+
 ## Installation
 Add the Synthos VPM listing to VCC and add **Synthos FX Optimizer** to your project. It can be installed next to the original d4rkAvatarOptimizer, but don't put both components on the same avatar.
 
