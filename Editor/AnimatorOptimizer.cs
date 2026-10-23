@@ -26,6 +26,8 @@ namespace d4rkpl4y3r.AvatarOptimizer
         private HashSet<string> boolsToChangeToFloat = new HashSet<string>();
         private HashSet<string> intsToChangeToFloat = new HashSet<string>();
         private List<(EditorCurveBinding binding, float value)> constantCurvesToAdd = new List<(EditorCurveBinding binding, float value)>();
+        private Dictionary<int, List<(EditorCurveBinding binding, float value)>> restingValues = new();
+        private int mergedLayerPosition = -1;
         private bool isFxLayer = false;
         private List<(string msg, int indent)> logMessages;
         private string mergedLayersParameter = "SynthosFxOptimizer_MergedLayers_Weight";
@@ -39,7 +41,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
             assetPath = path;
         }
 
-        public static AnimatorController Run(AnimatorController source, string path, Dictionary<int, int> fxLayerMap, List<(string msg, int indent)> logMessages, bool deleteUnusedParameters = true, List<int> layersToMerge = null, List<int> layersToDestroy = null, List<(EditorCurveBinding binding, float value)> constantCurvesToAdd = null)
+        public static AnimatorController Run(AnimatorController source, string path, Dictionary<int, int> fxLayerMap, List<(string msg, int indent)> logMessages, bool deleteUnusedParameters = true, List<int> layersToMerge = null, List<int> layersToDestroy = null, List<(EditorCurveBinding binding, float value)> constantCurvesToAdd = null, Dictionary<int, List<(EditorCurveBinding binding, float value)>> restingValues = null, int mergedLayerPosition = -1)
         {
             var target = new AnimatorController();
             target.name = $"{source.name}(Optimized)";
@@ -54,6 +56,8 @@ namespace d4rkpl4y3r.AvatarOptimizer
             optimizer.layersToDestroy = new HashSet<int>(layersToDestroy ?? new());
             optimizer.isFxLayer = constantCurvesToAdd != null;
             optimizer.constantCurvesToAdd = constantCurvesToAdd ?? new();
+            optimizer.restingValues = restingValues ?? new();
+            optimizer.mergedLayerPosition = mergedLayerPosition;
             optimizer.logMessages = logMessages;
             optimizer.deleteUnusedParameters = deleteUnusedParameters;
             return optimizer.Run();
@@ -116,7 +120,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
 
         private readonly List<AnimatorControllerLayer> layersToAdd = new();
         private readonly HashSet<string> layerNames = new();
-        private void AddLayer(AnimatorControllerLayer layer)
+        private void AddLayer(AnimatorControllerLayer layer, int insertAt = -1)
         {
             using var _ = new Profiler.Section($"AnimatorOptimizer.AddLayer");
             var candidateName = layer.name;
@@ -127,7 +131,10 @@ namespace d4rkpl4y3r.AvatarOptimizer
             }
             layer.name = candidateName;
             layerNames.Add(layer.name);
-            layersToAdd.Add(layer);
+            if (insertAt >= 0 && insertAt < layersToAdd.Count)
+                layersToAdd.Insert(insertAt, layer);
+            else
+                layersToAdd.Add(layer);
         }
 
         private AnimatorController Run() {
@@ -154,8 +161,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 mergedLayersParameter = source.MakeUniqueParameterName(mergedLayersParameter);
             }
 
-            var syncedLayers = new List<(int layerIndex, AnimatorControllerLayer old)>();
-            int layerIndex = 0;
+            var syncedLayers = new List<(AnimatorControllerLayer layer, AnimatorControllerLayer old)>();
             using (new Profiler.Section($"AnimatorOptimizer.CloneLayers"))
             {
                 for (int i = 0; i < sourceLayers.Length; i++)
@@ -167,20 +173,17 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     newL.stateMachine.name = newL.name;
                     AddLayer(newL);
                     if (newL.syncedLayerIndex >= 0)
-                        syncedLayers.Add((layerIndex, sourceLayers[i]));
-                    layerIndex++;
+                        syncedLayers.Add((newL, sourceLayers[i]));
                 }
             }
 
             if (syncedLayers.Count > 0)
             {
-                var layers = target.layers;
-                for (int i = 0; i < syncedLayers.Count; i++)
+                // the layers aren't in the controller yet, so their positions can still change
+                foreach (var (layer, old) in syncedLayers)
                 {
-                    var layer = layers[syncedLayers[i].layerIndex];
-                    CloneOverrideMotions(layer, syncedLayers[i].old);
+                    CloneOverrideMotions(layer, old);
                 }
-                target.layers = layers;
             }
 
             using (new Profiler.Section($"AnimatorOptimizer.MergeLayers"))
@@ -262,6 +265,29 @@ namespace d4rkpl4y3r.AvatarOptimizer
             return newClip;
         }
 
+        // The clip an empty (write defaults) toggle state turns into: every binding of the other state's clip held at the value
+        // the property has while the layer doesn't animate it (see SynthosFxOptimizer.TryGetRestingValue).
+        private AnimationClip CreateRestingClip(int sourceLayerIndex, AnimationClip otherClip)
+        {
+            if (!restingValues.TryGetValue(sourceLayerIndex, out var values))
+            {
+                logMessages.Add(($"No resting values for layer {sourceLayerIndex}, assuming 0/1 toggle values", 0));
+                return CloneAndFlipCurves(otherClip);
+            }
+            var newClip = new AnimationClip() {
+                hideFlags = HideFlags.HideInHierarchy,
+                name = $"{otherClip.name}(Resting)",
+                frameRate = 60,
+                wrapMode = WrapMode.Default
+            };
+            foreach (var (binding, value) in values)
+            {
+                AnimationUtility.SetEditorCurve(newClip, binding, AnimationCurve.Constant(0, 1f / 60f, value));
+            }
+            AddToAsset(newClip);
+            return newClip;
+        }
+
         private AnimationClip CloneFromTime(AnimationClip clip, float time, string name = null)
         {
             var newClip = GameObject.Instantiate(clip);
@@ -300,8 +326,8 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     name = name ?? param,
                     blendType = BlendTreeType.Simple1D,
                     useAutomaticThresholds = children.All(c => c.threshold == 0f),
-                    maxThreshold = 1f,
-                    minThreshold = 0f,
+                    maxThreshold = children.All(c => c.threshold == 0f) ? 1f : children.Max(c => c.threshold),
+                    minThreshold = children.All(c => c.threshold == 0f) ? 0f : children.Min(c => c.threshold),
                     blendParameter = param,
                     children = children.Select(x => new ChildMotion() { motion = x.motion, timeScale = 1f, threshold = x.threshold}).ToArray()
                 };
@@ -373,9 +399,9 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 if (layerStates.Length == 2) {
                     var layerMotions = layerStates.Select(x => ConvertStateToMotion(x.state, negativeSpeedToggle)).ToArray();
                     if (IsNullOrEmpty(layerMotions[0]))
-                        layerMotions[0] = CloneAndFlipCurves(layerMotions[1] as AnimationClip);
+                        layerMotions[0] = CreateRestingClip(i, layerMotions[1] as AnimationClip);
                     if (IsNullOrEmpty(layerMotions[1]))
-                        layerMotions[1] = CloneAndFlipCurves(layerMotions[0] as AnimationClip);
+                        layerMotions[1] = CreateRestingClip(i, layerMotions[0] as AnimationClip);
 
                     var transitions = GetNonEntryTransitions(layer);
                     var singleIndex = transitions.Count(x => x.destinationState == layerStates[0].state) == 1 ? 0 : 1;
@@ -477,7 +503,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 name = "SynthosFxOptimizer_MergedLayers",
                 syncedLayerAffectsTiming = false,
                 stateMachine = stateMachine
-            });
+            }, mergedLayerPosition);
         }
 
         private AnimatorControllerLayer CloneLayer(AnimatorControllerLayer old, bool isFirstLayer = false)

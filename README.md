@@ -45,9 +45,12 @@ Toggles are layers that:
   * Have exactly two states.
   * Both states transitions point to the other state.
   * One state can only have a single transition while the other state has to have one transition with one inverse condition per condition of the first state.
-  * Transition conditions can be bool `if` & `if not` or int `greater x` & `less x + 1`.
+  * Transition conditions can be bool `if` & `if not`, int `greater x` & `less x + 1` or float `greater x` & `less x`.
+  * If one state is empty and relies on write defaults, the value the avatar shows while the toggle is off has to be known (a lower constant layer or the scene value).
 
 Layers are never merged when they are additive, animate transform rotations (rotations blend differently inside blend trees), or have an avatar mask while animating transforms or muscles.
+
+Layers that animate the same properties as other layers can be merged as long as the merged layer can be placed so that every shared property keeps the same winner. Two merged layers never animate the same property.
 
 Multi toggles are layers that:
   * Have no state behaviours.

@@ -211,6 +211,12 @@ public class SynthosFxOptimizerEditor : Editor
                         }
                     }
                 }
+                var mergePlan = optimizer.GetFXLayerMergePlan();
+                if (mergePlan.mergedLayerPosition >= 0)
+                {
+                    var mergedLayerAfter = mergePlan.mergedLayerAfter >= 0 ? $"after layer {mergePlan.mergedLayerAfter} {fxLayerLayers[mergePlan.mergedLayerAfter].name}" : "at the start";
+                    EditorGUILayout.LabelField($"Merged layer: new index {mergePlan.mergedLayerPosition}, {mergedLayerAfter}");
+                }
                 Profiler.EndSection();
             }
             EditorGUILayout.Separator();

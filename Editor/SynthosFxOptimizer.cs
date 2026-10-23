@@ -1532,36 +1532,18 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         var fxLayersToMerge = new List<int>();
         var fxLayersToDestroy = new List<int>();
         var fxLayerMap = new Dictionary<int, int>();
+        int mergedLayerPosition = -1;
         if (OptimizeFXLayer && GetFXLayer() != null)
         {
-            var nonErrors = new HashSet<string>() {"toggle", "motion time", "blend tree", "multi toggle"};
-            List<List<string>> analysisResult;
+            FXLayerMergePlan plan;
             using (new Profiler.Section("AnalyzeFXLayerMergeAbility()"))
-                analysisResult = AnalyzeFXLayerMergeAbility();
-            var uselessLayers = FindUselessFXLayers();
-            List<(int layerIndex, List<string> errors)> layersWithErrors = new();
-            int currentLayer = 0;
-            for (int i = 0; i < GetFXLayerLayers().Length; i++)
-            {
-                fxLayerMap[i] = currentLayer;
-                if (uselessLayers.Contains(i))
-                {
-                    fxLayersToDestroy.Add(i);
-                    continue;
-                }
-                if (analysisResult[i].All(e => nonErrors.Contains(e)))
-                {
-                    fxLayersToMerge.Add(i);
-                    continue;
-                }
-                layersWithErrors.Add((i, analysisResult[i]));
-                currentLayer++;
-            }
-            if (fxLayersToMerge.Count < 2 && fxLayersToDestroy.Count == 0)
-            {
-                fxLayersToMerge.Clear();
-                fxLayerMap.Clear();
-            }
+                plan = GetFXLayerMergePlan();
+            var analysisResult = AnalyzeFXLayerMergeAbility();
+            var layersWithErrors = plan.layersWithErrors;
+            fxLayersToMerge = plan.layersToMerge;
+            fxLayersToDestroy = plan.layersToDestroy;
+            fxLayerMap = plan.layerMap;
+            mergedLayerPosition = plan.mergedLayerPosition;
             LogToFile($"Optimizing FX Layer with {GetFXLayerLayers().Length} original layers");
             using var _ = log.IndentScope();
             if (fxLayersToDestroy.Count > 0)
@@ -1579,6 +1561,9 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 {
                     LogToFile($"- {analysisResult[layerIndex][0],-12} ({layerIndex}) {GetFXLayerLayers()[layerIndex].name}", 1);
                 }
+                LogToFile(plan.mergedLayerAfter >= 0
+                    ? $"- The merged layer is placed after ({plan.mergedLayerAfter}) {GetFXLayerLayers()[plan.mergedLayerAfter].name} (new index {mergedLayerPosition})"
+                    : $"- The merged layer is placed at the start (new index {mergedLayerPosition})");
             }
             if (layersWithErrors.Count > 0)
             {
@@ -1626,7 +1611,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                     continue;
                 layerCopyPaths[i] = $"{trashBinPath}c{i}_{GetControllerFileName(controller)}.controller";
                 optimizedControllers[i] = controller == GetFXLayer()
-                    ? AnimatorOptimizer.Run(controller, layerCopyPaths[i], fxLayerMap, messages, DeleteUnusedAnimatorParameters, fxLayersToMerge, fxLayersToDestroy, constantAnimatedValuesToAdd.Select(kvp => (kvp.Key, kvp.Value)).ToList())
+                    ? AnimatorOptimizer.Run(controller, layerCopyPaths[i], fxLayerMap, messages, DeleteUnusedAnimatorParameters, fxLayersToMerge, fxLayersToDestroy, constantAnimatedValuesToAdd.Select(kvp => (kvp.Key, kvp.Value)).ToList(), GetFXLayerRestingValues(), mergedLayerPosition)
                     : AnimatorOptimizer.Run(controller, layerCopyPaths[i], fxLayerMap, messages, DeleteUnusedAnimatorParameters);
                 optimizedControllers[i].name = $"Base{i}_{GetControllerFileName(controller)}";
                 avDescriptor.baseAnimationLayers[i].animatorController = optimizedControllers[i];
@@ -1819,6 +1804,247 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return result;
     }
 
+    private HashSet<int> cache_FXLayersWithWeightControl = null;
+    private HashSet<int> GetFXLayersWithWeightControl()
+    {
+        if (cache_FXLayersWithWeightControl != null)
+            return cache_FXLayersWithWeightControl;
+        var result = new HashSet<int>();
+        foreach (var controller in GetAvDescriptorControllers())
+        {
+            foreach (var layer in controller.layers)
+            {
+                if (layer.stateMachine == null)
+                    continue;
+                foreach (var behaviour in layer.stateMachine.EnumerateAllBehaviours())
+                {
+                    if (behaviour is VRCAnimatorLayerControl layerControl && layerControl.playable == BlendableLayer.FX)
+                        result.Add(layerControl.layer);
+                }
+            }
+        }
+        return cache_FXLayersWithWeightControl = result;
+    }
+
+    private static IEnumerable<AnimationClip> EnumerateLayerClips(AnimatorControllerLayer layer)
+    {
+        if (layer.stateMachine != null)
+        {
+            foreach (var state in layer.stateMachine.EnumerateAllStates())
+            {
+                if (state.motion == null)
+                    continue;
+                foreach (var clip in state.motion.EnumerateAllClips())
+                    yield return clip;
+            }
+        }
+        foreach (var (_, motion) in layer.EnumerateAllMotionOverrides())
+        {
+            if (motion == null)
+                continue;
+            foreach (var clip in motion.EnumerateAllClips())
+                yield return clip;
+        }
+    }
+
+    // path + property name of everything animated by the Base, Additive, Gesture, Action and special layer controllers (not FX)
+    private HashSet<(string path, string property)> cache_OtherPlayableLayerBindings = null;
+    private HashSet<(string path, string property)> GetOtherPlayableLayerBindings()
+    {
+        if (cache_OtherPlayableLayerBindings != null)
+            return cache_OtherPlayableLayerBindings;
+        var result = new HashSet<(string, string)>();
+        var fx = GetFXLayer();
+        foreach (var controller in GetAvDescriptorControllers())
+        {
+            if (controller == fx)
+                continue;
+            foreach (var layer in controller.layers)
+            {
+                foreach (var clip in EnumerateLayerClips(layer))
+                {
+                    foreach (var b in AnimationUtility.GetCurveBindings(clip))
+                        result.Add((b.path, b.propertyName));
+                }
+            }
+        }
+        return cache_OtherPlayableLayerBindings = result;
+    }
+
+    // path + property name animated by each FX layer (index = layer index)
+    private List<HashSet<(string path, string property)>> cache_FXLayerBindingNames = null;
+    private List<HashSet<(string path, string property)>> GetFXLayerBindingNames()
+    {
+        if (cache_FXLayerBindingNames != null)
+            return cache_FXLayerBindingNames;
+        return cache_FXLayerBindingNames = GetFXLayerLayers().Select(layer => {
+            var set = new HashSet<(string, string)>();
+            foreach (var clip in EnumerateLayerClips(layer))
+                foreach (var b in AnimationUtility.GetCurveBindings(clip))
+                    set.Add((b.path, b.propertyName));
+            return set;
+        }).ToList();
+    }
+
+    // The "resting" value of a binding is the value the avatar shows while a write defaults FX layer sits in its empty state
+    // (which doesn't animate the binding at all). That is the value of whatever lower FX layer writes it, or if nothing writes
+    // it, the value the avatar has in the scene (what the Animator captures when it binds). The merged direct blend tree writes
+    // every binding of its children all the time, so its empty state has to be an explicit clip holding this value.
+    // Returns false if the value can't be known for sure (the layer must then not be merged).
+    public bool TryGetRestingValue(EditorCurveBinding binding, int fxLayerIndex, out float value)
+    {
+        return TryGetRestingValue(binding, fxLayerIndex, out value, out _);
+    }
+
+    public bool TryGetRestingValue(EditorCurveBinding binding, int fxLayerIndex, out float value, out string failReason)
+    {
+        value = 0;
+        failReason = null;
+        var key = (binding.path, binding.propertyName);
+
+        if (GetOtherPlayableLayerBindings().Contains(key))
+        {
+            failReason = "also animated by a non FX playable layer";
+            return false;
+        }
+
+        var fxLayers = GetFXLayerLayers();
+        var layerBindings = GetFXLayerBindingNames();
+        var uselessLayers = FindUselessFXLayers();
+        // the highest lower layer that animates the binding is the one that decides what the resting value is
+        for (int j = Math.Min(fxLayerIndex, fxLayers.Length) - 1; j >= 0; j--)
+        {
+            if (uselessLayers.Contains(j) || !layerBindings[j].Contains(key))
+                continue;
+            var layer = fxLayers[j];
+            var sm = layer.stateMachine;
+            if (layer.defaultWeight != 1f || GetFXLayersWithWeightControl().Contains(j))
+            {
+                failReason = $"lower layer {j} '{layer.name}' animates it and its weight is not constant 1";
+                return false;
+            }
+            if (layer.blendingMode != AnimatorLayerBlendingMode.Override || layer.avatarMask != null || layer.syncedLayerIndex != -1)
+            {
+                failReason = $"lower layer {j} '{layer.name}' animates it and is additive, masked or synced";
+                return false;
+            }
+            if (sm == null || sm.stateMachines.Length != 0 || sm.states.Length != 1
+                || !(sm.states[0].state.motion is AnimationClip clip) || sm.states[0].state.timeParameterActive)
+            {
+                failReason = $"lower layer {j} '{layer.name}' animates it and is not a single state with a plain clip";
+                return false;
+            }
+            var b = AnimationUtility.GetCurveBindings(clip).Where(x => x.path == binding.path && x.propertyName == binding.propertyName).ToArray();
+            if (b.Length != 1 || b[0].type != binding.type)
+            {
+                failReason = $"lower layer {j} '{layer.name}' animates it with a different component type";
+                return false;
+            }
+            var keys = AnimationUtility.GetEditorCurve(clip, b[0]).keys;
+            if (keys.Length == 0 || keys.Any(k => k.value != keys[0].value))
+            {
+                failReason = $"lower layer {j} '{layer.name}' animates it with a non constant curve";
+                return false;
+            }
+            value = keys[0].value;
+            return true;
+        }
+
+        // nothing else writes it, so it keeps the value it has in the scene
+        var descriptor = GetAvatarDescriptor();
+        if (descriptor == null)
+        {
+            failReason = "no avatar descriptor";
+            return false;
+        }
+        var avatarRoot = descriptor.gameObject;
+        bool changed = false;
+        // the scene may already have been changed by earlier optimizer steps (renamed blend shapes, moved objects)
+        var current = FixAnimationBinding(binding, ref changed);
+        var target = GetTransformFromPath(current.path);
+        if (target == null)
+        {
+            failReason = $"object '{current.path}' not found";
+            return false;
+        }
+
+        // same ratio merges keep the curves of the non first blend shapes under their old names, which no longer exist,
+        // so those curves change nothing and any value will do, 0 here
+        if (current.type == typeof(SkinnedMeshRenderer) && current.propertyName.StartsWithSimple("blendShape."))
+        {
+            var mesh = target.GetComponent<SkinnedMeshRenderer>()?.sharedMesh;
+            if (mesh != null && mesh.GetBlendShapeIndex(current.propertyName.Substring("blendShape.".Length)) < 0)
+                return true;
+        }
+
+        if (current.propertyName.StartsWithSimple("material.") && typeof(Renderer).IsAssignableFrom(current.type))
+        {
+            // an animated material property applies to every slot of the renderer that has it, so all of those have to agree
+            var renderer = target.GetComponent(current.type) as Renderer ?? target.GetComponent<Renderer>();
+            if (renderer == null)
+            {
+                failReason = $"no renderer at '{current.path}'";
+                return false;
+            }
+            var prop = current.propertyName.Substring("material.".Length);
+            string componentName = null;
+            if (prop.Length > 2 && prop[^2] == '.' && "rgbaxyzw".IndexOf(prop[^1]) >= 0)
+            {
+                // GetFloat/GetVector need the name without the component
+                componentName = prop[^1].ToString();
+                prop = prop.Substring(0, prop.Length - 2);
+            }
+            int componentIndex = componentName == null ? -1 : "rgba".IndexOf(componentName) >= 0 ? "rgba".IndexOf(componentName) : "xyzw".IndexOf(componentName);
+            bool hasValue = false;
+            float materialValue = 0;
+            foreach (var material in renderer.sharedMaterials)
+            {
+                if (material == null || !material.HasProperty(prop))
+                    continue;
+                float slotValue = componentIndex < 0 ? material.GetFloat(prop) : material.GetVector(prop)[componentIndex];
+                if (hasValue && slotValue != materialValue)
+                {
+                    failReason = $"material slots of '{current.path}' disagree on {prop} ({materialValue} vs {slotValue})";
+                    return false;
+                }
+                hasValue = true;
+                materialValue = slotValue;
+            }
+            // no slot has the property: animating it changes nothing visible, so any value will do, 0 here
+            if (!hasValue)
+                return true;
+            // GetFloatValue reads the first slot only, but if that one has the property it has to agree
+            // with the raw material value (guards against color space conversions)
+            var firstMaterial = renderer.sharedMaterials.Length > 0 ? renderer.sharedMaterials[0] : null;
+            if (firstMaterial != null && firstMaterial.HasProperty(prop))
+            {
+                if (!AnimationUtility.GetFloatValue(avatarRoot, current, out var animatedValue) || animatedValue != materialValue)
+                {
+                    failReason = $"scene value of {current.propertyName} at '{current.path}' is not the raw material value";
+                    return false;
+                }
+            }
+            value = materialValue;
+            return true;
+        }
+
+        if (!AnimationUtility.GetFloatValue(avatarRoot, current, out value))
+        {
+            value = 0;
+            failReason = $"could not read the scene value of {current.type?.Name} {current.propertyName} at '{current.path}'";
+            return false;
+        }
+        return true;
+    }
+
+    // resting values for every layer that relies on write defaults to leave a binding alone in its empty state
+    private Dictionary<int, List<(EditorCurveBinding binding, float value)>> cache_FXLayerRestingValues = null;
+    public Dictionary<int, List<(EditorCurveBinding binding, float value)>> GetFXLayerRestingValues()
+    {
+        AnalyzeFXLayerMergeAbility();
+        return cache_FXLayerRestingValues ?? new Dictionary<int, List<(EditorCurveBinding binding, float value)>>();
+    }
+
     private List<List<string>> cache_AnalyzeFXLayerMergeAbility;
     public List<List<string>> AnalyzeFXLayerMergeAbility()
     {
@@ -1830,6 +2056,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
 
         var fxLayerLayers = GetFXLayerLayers();
         var errorMessages = fxLayerLayers.Select(layer => new List<string>()).ToList();
+        cache_FXLayerRestingValues = new Dictionary<int, List<(EditorCurveBinding binding, float value)>>();
 
         foreach (var controller in GetAvDescriptorControllers())
         {
@@ -2092,8 +2319,11 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                         conditionError = true;
                         break;
                     }
-                    if (paramLookup[condition.parameter].type == AnimatorControllerParameterType.Float) {
-                        errorMessages[i].Add($"parameter {condition.parameter} is float");
+                    // the merged blend tree puts its thresholds at threshold -+ 0.001, which float precision can't tell apart for big values
+                    if (paramLookup[condition.parameter].type == AnimatorControllerParameterType.Float
+                        && (condition.mode == AnimatorConditionMode.Greater || condition.mode == AnimatorConditionMode.Less)
+                        && Mathf.Abs(condition.threshold) > 1000f) {
+                        errorMessages[i].Add($"parameter {condition.parameter} is float with a threshold of {condition.threshold}");
                         conditionError = true;
                         break;
                     }
@@ -2178,8 +2408,43 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                         continue;
                     }
                 }
-                if (reliesOnWriteDefaults && !onlyBoolBindings) {
-                    errorMessages[i].Add($"relies on write defaults and animates something other than m_Enabled/m_IsActive");
+                if (reliesOnWriteDefaults) {
+                    // The empty state doesn't animate anything, so the layer shows the value the property has without it
+                    // (see TryGetRestingValue). The merged tree needs that value as an explicit clip.
+                    var emptyStateIndex = AnimatorOptimizer.IsNullOrEmpty(states[0].state.motion) ? 0 : 1;
+                    if (states[1 - emptyStateIndex].state.motion is AnimationClip onClip) {
+                        var restingList = new List<(EditorCurveBinding binding, float value)>();
+                        var onClipBindings = AnimationUtility.GetCurveBindings(onClip);
+                        var onClipBindingNames = new HashSet<(string, string)>(onClipBindings.Select(b => (b.path, b.propertyName)));
+                        foreach (var binding in onClipBindings) {
+                            // A blend tree writes every component of a Transform position/scale, the ones the clip doesn't animate
+                            // get their default (0 or 1) instead of the scene value, so partially animated vectors can't be merged.
+                            if (binding.type == typeof(Transform) && binding.propertyName.Length > 2 && binding.propertyName[^2] == '.'
+                                && (binding.propertyName.StartsWithSimple("m_LocalPosition") || binding.propertyName.StartsWithSimple("m_LocalScale"))) {
+                                var vectorName = binding.propertyName.Substring(0, binding.propertyName.Length - 1);
+                                if (!(onClipBindingNames.Contains((binding.path, vectorName + "x")) && onClipBindingNames.Contains((binding.path, vectorName + "y"))
+                                    && onClipBindingNames.Contains((binding.path, vectorName + "z")))) {
+                                    errorMessages[i].Add($"relies on write defaults and only animates some components of the Transform vector {binding.path}/{vectorName.TrimEnd('.')}");
+                                    restingList = null;
+                                    break;
+                                }
+                            }
+                            var keys = AnimationUtility.GetEditorCurve(onClip, binding).keys;
+                            if (!TryGetRestingValue(binding, i, out var restingValue, out var failReason)) {
+                                errorMessages[i].Add($"relies on write defaults and the resting value of {binding.path}/{binding.propertyName} is not known: {failReason}");
+                                restingList = null;
+                                break;
+                            }
+                            restingList.Add((binding, restingValue));
+                            float oldFlipValue = keys.Length > 0 ? 1 - keys[0].value : 0;
+                            if (Mathf.Abs(restingValue - oldFlipValue) > 1e-6f) {
+                                LogToFile($"- Layer ({i}) {layer.name}: resting value of {binding.path}/{binding.propertyName} is {restingValue} (on value {(keys.Length > 0 ? keys[0].value : 0)}), flipping the on value would have given {oldFlipValue}");
+                            }
+                        }
+                        if (restingList != null) {
+                            cache_FXLayerRestingValues[i] = restingList;
+                        }
+                    }
                 }
                 if (stateTransitions.Any(s => s.Any(t => t.duration != 0.0f)) && !onlyBoolBindings) {
                     errorMessages[i].Add($"transition has non 0 duration and animates something other than m_Enabled/m_IsActive");
@@ -2241,21 +2506,178 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 errorMessages[i].Add($"multi toggle");
             }
 
-            for (int j = 0; j < fxLayerLayers.Length; j++) {
-                if (i == j || uselessLayers.Contains(j))
-                    continue;
-                foreach (var binding in fxLayerBindings[i]) {
-                    if (fxLayerBindings[j].Contains(binding)) {
-                        errorMessages[i].Add($"{binding.path} is used in {j} {fxLayerLayers[j].name}");
-                    }
-                }
-            }
         }
+        ResolveSharedFXLayerBindings(errorMessages, fxLayerBindings, uselessLayers);
         for (int i = 0; i < errorMessages.Count; i++)
         {
             errorMessages[i] = errorMessages[i].Distinct().ToList();
         }
         return cache_AnalyzeFXLayerMergeAbility = errorMessages;
+    }
+
+    // Number of kept (not merged, not removed) FX layers that stay below the merged layer.
+    private int? cache_FXLayerMergePosition = null;
+
+    // Merged layers share one direct blend tree, so two of them can't animate the same binding (the values would add up).
+    // A merged layer can share a binding with a kept layer though, as long as the merged layer ends up on the same side
+    // of that layer as the original layer was: the higher layer wins for a binding whenever it animates it.
+    // Candidates are handled in layer index order: a candidate that shares a binding with an earlier one, or that no position
+    // fits with the layers already decided, stays a normal layer (which then limits the position of the others).
+    private void ResolveSharedFXLayerBindings(List<List<string>> errorMessages, List<HashSet<(string path, Type type)>> layerBindings, HashSet<int> uselessLayers)
+    {
+        var nonErrors = new HashSet<string>() {"toggle", "motion time", "blend tree", "multi toggle"};
+        var fxLayerLayers = GetFXLayerLayers();
+        var accepted = Enumerable.Range(0, fxLayerLayers.Length)
+            .Where(i => !uselessLayers.Contains(i) && errorMessages[i].Count > 0 && errorMessages[i].All(nonErrors.Contains)).ToList();
+        // the constants clip is merged into the same tree and the merged layer used to be the last one, so it must stay above layers sharing its bindings
+        var constantBindings = new HashSet<(string path, Type type)>(constantAnimatedValuesToAdd.Keys.Select(b => ($"{b.path}.{b.propertyName}", b.type)));
+        // Unity writes all three components of a Transform position/scale whenever a state animates one of them (the others get their
+        // default value), so for the order of layers a partly animated vector counts as fully animated.
+        layerBindings = layerBindings.Select(set => {
+            var expanded = new HashSet<(string path, Type type)>(set);
+            foreach (var (path, type) in set)
+            {
+                if (type != typeof(Transform) || path.Length < 3 || path[^2] != '.')
+                    continue;
+                var dot = path.LastIndexOf(".m_Local", System.StringComparison.Ordinal);
+                if (dot < 0 || !(path.Substring(dot).StartsWith(".m_LocalPosition.") || path.Substring(dot).StartsWith(".m_LocalScale.")))
+                    continue;
+                foreach (var component in "xyz")
+                    expanded.Add((path.Substring(0, path.Length - 1) + component, type));
+            }
+            return expanded;
+        }).ToList();
+        while (true)
+        {
+            var owners = new Dictionary<(string path, Type type), int>();
+            foreach (var b in constantBindings)
+                owners[b] = -1;
+            int rejected = -1;
+            string rejectedReason = null;
+            foreach (var i in accepted)
+            {
+                foreach (var b in layerBindings[i])
+                {
+                    if (owners.TryGetValue(b, out var owner))
+                    {
+                        rejected = i;
+                        rejectedReason = owner < 0 ? $"{b.path} is also written by the merged constants" : $"{b.path} is shared with merged layer {owner} {fxLayerLayers[owner].name}";
+                        break;
+                    }
+                }
+                if (rejected >= 0)
+                    break;
+                foreach (var b in layerBindings[i])
+                    owners[b] = i;
+            }
+            if (rejected >= 0)
+            {
+                accepted.Remove(rejected);
+                errorMessages[rejected].Add(rejectedReason);
+                continue;
+            }
+
+            var acceptedSet = new HashSet<int>(accepted);
+            var kept = Enumerable.Range(0, fxLayerLayers.Length).Where(i => !uselessLayers.Contains(i) && !acceptedSet.Contains(i)).ToList();
+            // layer 0 stays layer 0, with MMD compatibility the first 3 layers stay in place
+            int low = kept.Count == 0 ? 0 : MMDCompatibility ? Math.Min(3, kept.Count) : 1;
+            int high = kept.Count;
+            int lowLayer = -1, lowOwner = -1, highLayer = -1, highOwner = -1;
+            foreach (var i in accepted)
+            {
+                for (int r = 0; r < kept.Count; r++)
+                {
+                    if (!layerBindings[i].Overlaps(layerBindings[kept[r]]))
+                        continue;
+                    if (kept[r] < i && r + 1 > low)
+                        (low, lowLayer, lowOwner) = (r + 1, kept[r], i);
+                    else if (kept[r] > i && r < high)
+                        (high, highLayer, highOwner) = (r, kept[r], i);
+                }
+            }
+            if (constantBindings.Count > 0)
+            {
+                for (int r = 0; r < kept.Count; r++)
+                {
+                    if (layerBindings[kept[r]].Overlaps(constantBindings) && r + 1 > low)
+                        (low, lowLayer, lowOwner) = (r + 1, kept[r], -1);
+                }
+            }
+            if (low <= high)
+            {
+                // highest valid position, the merged layer stays at the end unless something above it forbids that
+                cache_FXLayerMergePosition = high;
+                return;
+            }
+            int dropped = lowOwner < 0 ? highOwner : highOwner < 0 ? lowOwner : Math.Max(lowOwner, highOwner);
+            int against = dropped == lowOwner ? highLayer : lowLayer >= 0 ? lowLayer : highLayer;
+            accepted.Remove(dropped);
+            errorMessages[dropped].Add($"no merged layer position keeps the order with layer {against} {fxLayerLayers[against].name}");
+        }
+    }
+
+    public class FXLayerMergePlan
+    {
+        public List<int> layersToMerge = new List<int>();
+        public List<int> layersToDestroy = new List<int>();
+        // old FX layer index -> index in the optimized FX controller
+        public Dictionary<int, int> layerMap = new Dictionary<int, int>();
+        // number of kept layers below the merged layer, -1 if there is none
+        public int mergedLayerPosition = -1;
+        public List<(int layerIndex, List<string> errors)> layersWithErrors = new List<(int layerIndex, List<string> errors)>();
+        // old index of the kept layer right below the merged layer, -1 if there is none
+        public int mergedLayerAfter = -1;
+    }
+
+    public FXLayerMergePlan GetFXLayerMergePlan()
+    {
+        var plan = new FXLayerMergePlan();
+        var nonErrors = new HashSet<string>() {"toggle", "motion time", "blend tree", "multi toggle"};
+        var analysisResult = AnalyzeFXLayerMergeAbility();
+        var uselessLayers = FindUselessFXLayers();
+        var layerCount = GetFXLayerLayers().Length;
+        var kept = new List<int>();
+        for (int i = 0; i < layerCount; i++)
+        {
+            if (uselessLayers.Contains(i))
+            {
+                plan.layersToDestroy.Add(i);
+                continue;
+            }
+            if (analysisResult[i].All(e => nonErrors.Contains(e)))
+            {
+                plan.layersToMerge.Add(i);
+                continue;
+            }
+            plan.layersWithErrors.Add((i, analysisResult[i]));
+            kept.Add(i);
+        }
+        if (plan.layersToMerge.Count < 2 && plan.layersToDestroy.Count == 0)
+        {
+            plan.layersToMerge.Clear();
+            return plan;
+        }
+        bool hasMergedLayer = plan.layersToMerge.Count > 0 || constantAnimatedValuesToAdd.Count > 0;
+        if (hasMergedLayer)
+        {
+            plan.mergedLayerPosition = Math.Min(cache_FXLayerMergePosition ?? kept.Count, kept.Count);
+            plan.mergedLayerAfter = plan.mergedLayerPosition > 0 ? kept[plan.mergedLayerPosition - 1] : -1;
+        }
+        int rank = 0;
+        for (int i = 0; i < layerCount; i++)
+        {
+            bool isKept = rank < kept.Count && kept[rank] == i;
+            if (!hasMergedLayer)
+                plan.layerMap[i] = rank;
+            else if (isKept)
+                plan.layerMap[i] = rank < plan.mergedLayerPosition ? rank : rank + 1;
+            // removed layers point at the first kept layer after them (the merged layer if that is the one at the end)
+            else
+                plan.layerMap[i] = rank <= plan.mergedLayerPosition ? rank : rank + 1;
+            if (isKept)
+                rank++;
+        }
+        return plan;
     }
 
     private HashSet<int> cache_FindUselessFXLayers = null;

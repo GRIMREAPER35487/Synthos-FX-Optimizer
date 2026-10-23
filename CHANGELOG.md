@@ -1,4 +1,15 @@
 # Synthos FX Optimizer
+## v1.0.0-beta.6
+### Changes
+* Many more FX layers can be merged. On the test avatars: 41 -> 24 layers instead of 41 -> 30, 36 -> 19 instead of 36 -> 25 and 42 -> 37 instead of 42 -> 40, with no change in behavior.
+  * Toggles driven by a float parameter can be merged (for example VRCFury toggles that are on whenever the parameter isn't 0).
+  * Write defaults toggles with an empty off state can be merged when they animate blend shapes, material properties or transforms. The off state now gets the value the avatar actually shows while the toggle is off: the value of a lower constant layer (like VRCFury's Defaults layer), otherwise the scene value. Layers where that value can't be known (material slots that disagree, a lower layer that changes it, another playable layer animating it) are still kept.
+  * Layers that animate the same things as other layers can be merged. The merged layer is now placed where every shared property keeps the same winner, instead of always at the end. Two merged layers never share a property, and layer control behaviours and synced layers get the new indices.
+* Blend shape curves left behind by same ratio blend shape merging no longer block layers from merging.
+* The off state of merged write defaults toggles no longer assumes 0/1 values (it used to set `1 - on value`).
+* Fix copying the override motions of synced layers.
+* The FX layer merge preview shows where the merged layer goes.
+
 ## v1.0.0-beta.5
 ### Changes
 * Builds no longer get slower the more avatars you build in one editor session (batch uploads). Copying the animator layers recorded undo history for every transition and condition, which kept growing; it is now turned off for the build copy. On a large test avatar copying transitions went from up to 1.6s to ~0.05s per build.
