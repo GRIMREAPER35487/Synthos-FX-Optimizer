@@ -1,4 +1,8 @@
 # Synthos FX Optimizer
+## v1.0.1
+### Changes
+* Fix the last upload summary showing the wrong avatar when several avatars in a scene share a blueprint id (for example the PC and Quest versions). The summary is now stored per avatar. Summaries saved by earlier versions aren't shown anymore, the next upload of each avatar creates a new one.
+
 ## v1.0.0
 ### Changes
 * First stable release, same optimizer as v1.0.0-beta.7. On the test avatar the FX layer goes from 41 to 23 layers, with ~17-20% less animator time and ~16% less CPU frame time than without the optimizer.

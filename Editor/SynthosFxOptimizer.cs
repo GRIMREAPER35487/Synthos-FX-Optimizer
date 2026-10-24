@@ -513,17 +513,19 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
     private const string BuildSummaryPrefsPrefix = "Synthos_FxOptimizer_LastBuild_";
     private int componentsDeletedCount = 0;
 
-    // The optimizer runs on the upload clone, so the summary is stored by blueprint id (or avatar name)
-    // where the component on the scene avatar can find it again.
+    // The optimizer runs on the upload clone, so the summary is stored by blueprint id and avatar name
+    // where the component on the scene avatar can find it again. The name is part of the key because
+    // several avatars in a scene can share a blueprint id (for example the PC and Quest versions).
     public string GetBuildSummaryKey()
     {
         var av = GetAvatarDescriptor();
         if (av == null)
             return null;
-        if (av.TryGetComponent<VRC.Core.PipelineManager>(out var pm) && !string.IsNullOrEmpty(pm.blueprintId))
-            return pm.blueprintId;
         var name = av.name;
-        return name.EndsWith("(Clone)") ? name.Substring(0, name.Length - "(Clone)".Length).TrimEnd() : name;
+        name = name.EndsWith("(Clone)") ? name.Substring(0, name.Length - "(Clone)".Length).TrimEnd() : name;
+        if (av.TryGetComponent<VRC.Core.PipelineManager>(out var pm) && !string.IsNullOrEmpty(pm.blueprintId))
+            return pm.blueprintId + "_" + name;
+        return name;
     }
 
     public BuildSummary GetLastBuildSummary()
