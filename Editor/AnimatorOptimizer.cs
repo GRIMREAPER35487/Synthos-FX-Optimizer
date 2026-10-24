@@ -282,7 +282,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
             };
             foreach (var (binding, value) in values)
             {
-                AnimationUtility.SetEditorCurve(newClip, binding, AnimationCurve.Constant(0, 1f / 60f, value));
+                AnimationUtility.SetEditorCurve(newClip, binding, new AnimationCurve(new Keyframe(0, value)));
             }
             AddToAsset(newClip);
             return newClip;
@@ -306,6 +306,78 @@ namespace d4rkpl4y3r.AvatarOptimizer
         public static bool IsNullOrEmpty(Motion motion)
         {
             return motion == null || (motion is AnimationClip clip && clip.empty);
+        }
+
+        public static bool IsConstantCurve(AnimationCurve curve)
+        {
+            return curve.keys.All(k => k.value == curve.keys[0].value);
+        }
+
+        public static bool IsClipConstant(AnimationClip clip)
+        {
+            return AnimationUtility.GetCurveBindings(clip).All(b => IsConstantCurve(AnimationUtility.GetEditorCurve(clip, b)))
+                && AnimationUtility.GetObjectReferenceCurveBindings(clip).All(b => {
+                    var keys = AnimationUtility.GetObjectReferenceCurve(clip, b);
+                    return keys.All(k => k.value == keys[0].value);
+                });
+        }
+
+        // true if anything in the motion changes over time
+        public static bool IsMotionMoving(Motion motion)
+        {
+            return motion != null && motion.EnumerateAllClips().Any(c => !IsClipConstant(c));
+        }
+
+        // Every clip in the merged tree is 0 seconds long, so the tree has no duration for the one clip that moves to be slowed down by.
+        private readonly Dictionary<AnimationClip, AnimationClip> zeroLengthClips = new();
+        private AnimationClip ToZeroLengthClip(AnimationClip clip)
+        {
+            if (clip.length == 0 || !IsClipConstant(clip))
+                return clip;
+            if (zeroLengthClips.TryGetValue(clip, out var cached))
+                return cached;
+            var newClip = GameObject.Instantiate(clip);
+            newClip.name = clip.name;
+            newClip.ClearCurves();
+            newClip.hideFlags = HideFlags.HideInHierarchy;
+            foreach (var binding in AnimationUtility.GetObjectReferenceCurveBindings(clip))
+            {
+                AnimationUtility.SetObjectReferenceCurve(newClip, binding, null);
+                var keys = AnimationUtility.GetObjectReferenceCurve(clip, binding);
+                if (keys.Length > 0)
+                    AnimationUtility.SetObjectReferenceCurve(newClip, binding, new[] { new ObjectReferenceKeyframe { time = 0, value = keys[0].value } });
+            }
+            foreach (var binding in AnimationUtility.GetCurveBindings(clip))
+            {
+                var keys = AnimationUtility.GetEditorCurve(clip, binding).keys;
+                if (keys.Length > 0)
+                    AnimationUtility.SetEditorCurve(newClip, binding, new AnimationCurve(new Keyframe(0, keys[0].value)));
+            }
+            AddToAsset(newClip);
+            return zeroLengthClips[clip] = newClip;
+        }
+
+        private Motion ToZeroLengthMotion(Motion motion)
+        {
+            if (motion is AnimationClip clip)
+                return ToZeroLengthClip(clip);
+            if (motion is BlendTree tree)
+            {
+                var children = tree.children;
+                bool changed = false;
+                for (int i = 0; i < children.Length; i++)
+                {
+                    var newMotion = ToZeroLengthMotion(children[i].motion);
+                    if (newMotion != children[i].motion)
+                    {
+                        children[i].motion = newMotion;
+                        changed = true;
+                    }
+                }
+                if (changed)
+                    tree.children = children;
+            }
+            return motion;
         }
 
         private void MergeLayers() {
@@ -449,6 +521,9 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     var layerMotions = transitions.Select(x => ConvertStateToMotion(x.destinationState, negativeSpeedToggle)).ToArray();
                     layerMotion = CreateBlendTree(transitions[0].conditions[0].parameter, layerMotions.Select((x, index) => new ChildMotion() { motion = x, threshold = index}).ToArray());
                 }
+                // a layer that changes over time keeps its own clip lengths (its timing depends on them), it is the only one allowed to move
+                if (!(layerStates.Length == 1 && IsMotionMoving(layerMotion)))
+                    layerMotion = ToZeroLengthMotion(layerMotion);
                 layerMotion.name = sourceLayers[i].name;
                 motions.Add(new ChildMotion() {
                     motion = layerMotion,
@@ -466,7 +541,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 };
                 foreach (var curve in constantCurvesToAdd)
                 {
-                    AnimationUtility.SetEditorCurve(layerMotion, curve.binding, AnimationCurve.Constant(0, 1f / 60f, curve.value));
+                    AnimationUtility.SetEditorCurve(layerMotion, curve.binding, new AnimationCurve(new Keyframe(0, curve.value)));
                 }
                 AddToAsset(layerMotion);
                 motions.Add(new ChildMotion() {

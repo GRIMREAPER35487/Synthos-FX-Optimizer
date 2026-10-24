@@ -48,9 +48,11 @@ Toggles are layers that:
   * Transition conditions can be bool `if` & `if not`, int `greater x` & `less x + 1` or float `greater x` & `less x`.
   * If one state is empty and relies on write defaults, the value the avatar shows while the toggle is off has to be known (a lower constant layer or the scene value).
 
-Layers are never merged when they are additive, animate transform rotations (rotations blend differently inside blend trees), or have an avatar mask while animating transforms or muscles.
+Layers are never merged when they are additive or have an avatar mask while animating transforms or muscles. Layers that animate transform rotations (rotations blend differently inside blend trees) are only merged when they have a single state whose animation never changes over time.
 
-Layers that animate the same properties as other layers can be merged as long as the merged layer can be placed so that every shared property keeps the same winner. Two merged layers never animate the same property.
+Layers that animate the same properties as other layers can be merged as long as the merged layer can be placed so that every shared property keeps the same winner. Two merged layers never animate the same property. Curves on objects, components or blend shapes that don't exist don't count as shared.
+
+Animations that don't change over time get a length of 0 in the merged tree, so they don't change its timing. Only one merged layer may have animations that change over time, so it keeps playing at its own speed.
 
 Multi toggles are layers that:
   * Have no state behaviours.

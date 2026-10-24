@@ -1,4 +1,10 @@
 # Synthos FX Optimizer
+## v1.0.0-beta.7
+### Changes
+* Single state layers that animate transform rotations can be merged when their animation doesn't change over time. On the test avatars: 41 -> 23 layers instead of 41 -> 24 and 36 -> 18 instead of 36 -> 19.
+* Curves on objects, components or blend shapes that don't exist on the avatar no longer stop layers that share them from merging.
+* Fix the speed of animations that change over time inside the merged layer. A blend tree plays for the sum of its children's lengths, so merged clips slowed each other down (a long clip like a frame time counter could freeze the rest). Animations that don't change over time now get a length of 0, and only one merged layer may have animations that change over time.
+
 ## v1.0.0-beta.6
 ### Changes
 * Many more FX layers can be merged. On the test avatars: 41 -> 24 layers instead of 41 -> 30, 36 -> 19 instead of 36 -> 25 and 42 -> 37 instead of 42 -> 40, with no change in behavior.

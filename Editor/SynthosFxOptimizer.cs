@@ -1778,6 +1778,10 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         Profiler.EndSection();
     }
 
+    // the keys of GetAllCurveBindings join path and property name, this remembers the binding behind a key
+    // (needed to look at the animated object, since both parts can contain dots)
+    private Dictionary<(string path, Type type), EditorCurveBinding> curveBindingOfKey = new Dictionary<(string path, Type type), EditorCurveBinding>();
+
     private HashSet<(string path, Type type)> GetAllCurveBindings(AnimatorStateMachine stateMachine)
     {
         var result = new HashSet<(string, Type)>();
@@ -1792,12 +1796,16 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 var bindings = AnimationUtility.GetCurveBindings(clip);
                 foreach (var binding in bindings)
                 {
-                    result.Add(($"{binding.path}.{binding.propertyName}", binding.type));
+                    var key = ($"{binding.path}.{binding.propertyName}", binding.type);
+                    result.Add(key);
+                    curveBindingOfKey.TryAdd(key, binding);
                 }
                 bindings = AnimationUtility.GetObjectReferenceCurveBindings(clip);
                 foreach (var binding in bindings)
                 {
-                    result.Add(($"{binding.path}.{binding.propertyName}", binding.type));
+                    var key = ($"{binding.path}.{binding.propertyName}", binding.type);
+                    result.Add(key);
+                    curveBindingOfKey.TryAdd(key, binding);
                 }
             }
         }
@@ -2045,6 +2053,11 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return cache_FXLayerRestingValues ?? new Dictionary<int, List<(EditorCurveBinding binding, float value)>>();
     }
 
+    private static bool IsConstantCurve(AnimationCurve curve)
+    {
+        return AnimatorOptimizer.IsConstantCurve(curve);
+    }
+
     private List<List<string>> cache_AnalyzeFXLayerMergeAbility;
     public List<List<string>> AnalyzeFXLayerMergeAbility()
     {
@@ -2081,6 +2094,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         }
 
         var fxLayerBindings = fxLayerLayers.Select(layer => GetAllCurveBindings(layer.stateMachine)).ToList();
+        var movingLayers = new HashSet<int>();
         var uselessLayers = FindUselessFXLayers();
         var fxLayerParameters = fxLayer.parameters;
         var intParams = new HashSet<string>(fxLayerParameters.Where(p => p.type == AnimatorControllerParameterType.Int).Select(p => p.name));
@@ -2146,7 +2160,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             }
             // The merged direct blend tree is an override layer without a mask, so additive or masked layers
             // would change behavior once merged. Rotations blend as quaternions in blend trees, which breaks
-            // euler animations (spins, >180 degree turns), so those layers are kept as is too (same as VRCFury).
+            // euler animations (spins, >180 degree turns) when switching between states, so those layers are kept as is too (same as VRCFury).
             if (layer.blendingMode == AnimatorLayerBlendingMode.Additive)
             {
                 errorMessages[i].Add($"layer is additive");
@@ -2157,21 +2171,54 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 errorMessages[i].Add($"layer has an avatar mask and animates transforms or muscles");
                 continue;
             }
-            var rotationBinding = stateMachine.EnumerateAllStates()
-                .Where(s => s.motion != null)
-                .SelectMany(s => s.motion.EnumerateAllClips())
-                .SelectMany(c => AnimationUtility.GetCurveBindings(c))
+            var layerClips = stateMachine.EnumerateAllStates().Where(s => s.motion != null).SelectMany(s => s.motion.EnumerateAllClips()).Distinct().ToList();
+            var rotationBinding = layerClips.SelectMany(c => AnimationUtility.GetCurveBindings(c))
                 .FirstOrDefault(b => b.type == typeof(Transform) && (b.propertyName.StartsWith("localEulerAngles") || b.propertyName.StartsWith("m_LocalRotation") || b.propertyName.StartsWith("m_LocalEuler")));
-            if (rotationBinding.type != null)
+            if (rotationBinding.type != null && stateMachine.states.Length != 1)
             {
                 errorMessages[i].Add($"{rotationBinding.path} animates transform rotation, which works differently in blend trees");
                 continue;
+            }
+            if (rotationBinding.type != null)
+            {
+                // A layer with a single state already blends its rotations inside the motion, so as a child of the merged tree it gives the
+                // same result, as long as nothing in it changes over time (a clip in the merged tree doesn't play at the state's time).
+                bool rotationLayerMoves = false;
+                foreach (var clip in layerClips)
+                {
+                    var movingBinding = AnimationUtility.GetCurveBindings(clip).FirstOrDefault(b => !IsConstantCurve(AnimationUtility.GetEditorCurve(clip, b)));
+                    if (movingBinding.type != null)
+                    {
+                        errorMessages[i].Add($"{rotationBinding.path} animates transform rotation and {movingBinding.path}/{movingBinding.propertyName} changes over time, which a merged blend tree plays at a different time");
+                        rotationLayerMoves = true;
+                        break;
+                    }
+                }
+                if (rotationLayerMoves)
+                    continue;
             }
             var states = stateMachine.states;
             if (states.Length == 0)
             {
                 errorMessages[i].Add($"{states.Length} states");
                 continue;
+            }
+            // Every clip in the merged tree is 0 seconds long so that one moving layer plays at its normal speed. Only a layer with a
+            // single state can move, since the merged tree never restarts on a state change and keeps the speed of the state at 1.
+            if (states.Any(s => s.state.motion is BlendTree && AnimatorOptimizer.IsMotionMoving(s.state.motion)))
+            {
+                if (states.Length != 1)
+                {
+                    errorMessages[i].Add($"{states.Length} states and a blend tree contains a clip that changes over time");
+                    continue;
+                }
+                var movingState = states[0].state;
+                if (movingState.speed != 1f || movingState.speedParameterActive || movingState.cycleOffset != 0f || movingState.cycleOffsetParameterActive)
+                {
+                    errorMessages[i].Add($"{movingState.name} contains a clip that changes over time and has a speed or cycle offset");
+                    continue;
+                }
+                movingLayers.Add(i);
             }
 
             bool IsStateConvertableToAnimationOrBlendTree(AnimatorState state) {
@@ -2507,7 +2554,9 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             }
 
         }
-        ResolveSharedFXLayerBindings(errorMessages, fxLayerBindings, uselessLayers);
+        if (movingLayers.Count > 0)
+            LogToFile($"- Layers with a clip that changes over time: {string.Join(", ", movingLayers.OrderBy(x => x).Select(x => $"({x}) {fxLayerLayers[x].name}"))}");
+        ResolveSharedFXLayerBindings(errorMessages, fxLayerBindings, uselessLayers, movingLayers);
         for (int i = 0; i < errorMessages.Count; i++)
         {
             errorMessages[i] = errorMessages[i].Distinct().ToList();
@@ -2523,32 +2572,113 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
     // of that layer as the original layer was: the higher layer wins for a binding whenever it animates it.
     // Candidates are handled in layer index order: a candidate that shares a binding with an earlier one, or that no position
     // fits with the layers already decided, stays a normal layer (which then limits the position of the others).
-    private void ResolveSharedFXLayerBindings(List<List<string>> errorMessages, List<HashSet<(string path, Type type)>> layerBindings, HashSet<int> uselessLayers)
+    // Only one merged layer can contain a clip that changes over time (all other clips in the tree are 0 seconds long, see AnimatorOptimizer),
+    // the first one of the candidates that is still accepted gets it, so giving up the first one hands the spot to the next one.
+    private void ResolveSharedFXLayerBindings(List<List<string>> errorMessages, List<HashSet<(string path, Type type)>> layerBindings, HashSet<int> uselessLayers, HashSet<int> movingLayers)
     {
         var nonErrors = new HashSet<string>() {"toggle", "motion time", "blend tree", "multi toggle"};
         var fxLayerLayers = GetFXLayerLayers();
-        var accepted = Enumerable.Range(0, fxLayerLayers.Length)
+        var candidates = Enumerable.Range(0, fxLayerLayers.Length)
             .Where(i => !uselessLayers.Contains(i) && errorMessages[i].Count > 0 && errorMessages[i].All(nonErrors.Contains)).ToList();
         // the constants clip is merged into the same tree and the merged layer used to be the last one, so it must stay above layers sharing its bindings
-        var constantBindings = new HashSet<(string path, Type type)>(constantAnimatedValuesToAdd.Keys.Select(b => ($"{b.path}.{b.propertyName}", b.type)));
+        var constantBindings = new HashSet<(string path, Type type)>();
+        foreach (var b in constantAnimatedValuesToAdd.Keys)
+        {
+            var key = ($"{b.path}.{b.propertyName}", b.type);
+            curveBindingOfKey.TryAdd(key, b);
+            constantBindings.Add(key);
+        }
+        // Bindings that can't affect anything (the object or component doesn't exist) don't count as shared and don't
+        // constrain the order. The cache is per key, the same binding shows up in many layers.
+        var inertCache = new Dictionary<(string path, Type type), bool>();
+        string inertExample = null;
+        int inertBlendShapes = 0;
+        bool IsInert((string path, Type type) key)
+        {
+            if (inertCache.TryGetValue(key, out var cached))
+                return cached;
+            bool inert = false;
+            string why = null;
+            if (curveBindingOfKey.TryGetValue(key, out var original) && original.type != null && original.type != typeof(Animator))
+            {
+                bool changed = false;
+                var current = FixAnimationBinding(original, ref changed);
+                var target = GetTransformFromPath(current.path);
+                if (target == null)
+                {
+                    inert = true;
+                    why = "object not found";
+                }
+                else if (current.type != typeof(GameObject) && (typeof(Component).IsAssignableFrom(current.type)))
+                {
+                    var component = target.GetComponent(current.type);
+                    if (component == null)
+                    {
+                        inert = true;
+                        why = $"no {current.type.Name}";
+                    }
+                    else if (current.type == typeof(SkinnedMeshRenderer) && current.propertyName.StartsWithSimple("blendShape."))
+                    {
+                        // a blend shape the mesh doesn't have is ignored by Unity (same assumption as TryGetRestingValue)
+                        var mesh = ((SkinnedMeshRenderer)component).sharedMesh;
+                        if (mesh != null && mesh.GetBlendShapeIndex(current.propertyName.Substring("blendShape.".Length)) < 0)
+                        {
+                            inert = true;
+                            why = "blend shape not on mesh";
+                            inertBlendShapes++;
+                        }
+                    }
+                }
+                if (inert && inertExample == null)
+                    inertExample = $"{current.path}/{current.propertyName} ({current.type.Name}, {why})";
+            }
+            return inertCache[key] = inert;
+        }
+        constantBindings.RemoveWhere(IsInert);
+        layerBindings = layerBindings.Select(set => {
+            var filtered = new HashSet<(string path, Type type)>(set);
+            filtered.RemoveWhere(IsInert);
+            return filtered;
+        }).ToList();
+        {
+            int inertCount = inertCache.Count(kv => kv.Value);
+            if (inertCount > 0)
+                LogToFile($"- Ignoring {inertCount} animated bindings that can't affect anything when checking shared bindings ({inertBlendShapes} missing blend shapes), e.g. {inertExample}");
+        }
         // Unity writes all three components of a Transform position/scale whenever a state animates one of them (the others get their
-        // default value), so for the order of layers a partly animated vector counts as fully animated.
+        // default value), so for the order of layers a partly animated vector counts as fully animated. A rotation is one property too,
+        // whether it is animated as m_LocalRotation (xyzw) or as euler angles (xyz).
         layerBindings = layerBindings.Select(set => {
             var expanded = new HashSet<(string path, Type type)>(set);
             foreach (var (path, type) in set)
             {
                 if (type != typeof(Transform) || path.Length < 3 || path[^2] != '.')
                     continue;
-                var dot = path.LastIndexOf(".m_Local", System.StringComparison.Ordinal);
-                if (dot < 0 || !(path.Substring(dot).StartsWith(".m_LocalPosition.") || path.Substring(dot).StartsWith(".m_LocalScale.")))
+                var propertyDot = path.LastIndexOf('.', path.Length - 3);
+                if (propertyDot < 0)
                     continue;
-                foreach (var component in "xyz")
-                    expanded.Add((path.Substring(0, path.Length - 1) + component, type));
+                var objectPath = path.Substring(0, propertyDot);
+                var property = path.Substring(propertyDot + 1, path.Length - propertyDot - 3);
+                if (property == "m_LocalPosition" || property == "m_LocalScale")
+                {
+                    foreach (var component in "xyz")
+                        expanded.Add(($"{objectPath}.{property}.{component}", type));
+                }
+                else if (property == "m_LocalRotation" || property == "localEulerAnglesRaw" || property == "localEulerAngles" || property == "m_LocalEulerAnglesHint")
+                {
+                    foreach (var component in "xyzw")
+                        expanded.Add(($"{objectPath}.m_LocalRotation.{component}", type));
+                    foreach (var component in "xyz")
+                        expanded.Add(($"{objectPath}.localEulerAnglesRaw.{component}", type));
+                }
             }
             return expanded;
         }).ToList();
         while (true)
         {
+            int movingOwner = candidates.Where(movingLayers.Contains).DefaultIfEmpty(-1).First();
+            var extraMoving = candidates.Where(i => movingLayers.Contains(i) && i != movingOwner).ToList();
+            var accepted = candidates.Except(extraMoving).ToList();
             var owners = new Dictionary<(string path, Type type), int>();
             foreach (var b in constantBindings)
                 owners[b] = -1;
@@ -2572,7 +2702,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             }
             if (rejected >= 0)
             {
-                accepted.Remove(rejected);
+                candidates.Remove(rejected);
                 errorMessages[rejected].Add(rejectedReason);
                 continue;
             }
@@ -2607,11 +2737,13 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             {
                 // highest valid position, the merged layer stays at the end unless something above it forbids that
                 cache_FXLayerMergePosition = high;
+                foreach (var i in extraMoving)
+                    errorMessages[i].Add($"contains a clip that changes over time and the merged layer already has one (layer {movingOwner} {fxLayerLayers[movingOwner].name})");
                 return;
             }
             int dropped = lowOwner < 0 ? highOwner : highOwner < 0 ? lowOwner : Math.Max(lowOwner, highOwner);
             int against = dropped == lowOwner ? highLayer : lowLayer >= 0 ? lowLayer : highLayer;
-            accepted.Remove(dropped);
+            candidates.Remove(dropped);
             errorMessages[dropped].Add($"no merged layer position keeps the order with layer {against} {fxLayerLayers[against].name}");
         }
     }
