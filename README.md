@@ -1,5 +1,5 @@
 # Synthos FX Optimizer
-A trimmed fork of [d4rkAvatarOptimizer](https://github.com/d4rkc0d3r/d4rkAvatarOptimizer) by d4rkpl4y3r that keeps only the parts that measurably made avatars run faster: **FX layer merging and cleanup**.
+A trimmed fork of [d4rkAvatarOptimizer](https://github.com/d4rkc0d3r/d4rkAvatarOptimizer) by d4rkpl4y3r that keeps only the parts that measurably made avatars run faster: **FX layer merging and cleanup**, plus a few small extras that also run on upload (unused component removal, phys bone auto disable and same ratio blend shape merging).
 
 ## Why a trimmed fork?
 Standalone benchmarks (built through the real VRCFury upload pipeline and measured in a standalone player) showed:

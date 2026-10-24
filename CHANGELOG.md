@@ -1,4 +1,9 @@
 # Synthos FX Optimizer
+## v1.0.0
+### Changes
+* First stable release, same optimizer as v1.0.0-beta.7. On the test avatar the FX layer goes from 41 to 23 layers, with ~17-20% less animator time and ~16% less CPU frame time than without the optimizer.
+* The package description now mentions the extras besides FX layer optimization: unused component removal, phys bone auto disable and same ratio blend shape merging.
+
 ## v1.0.0-beta.7
 ### Changes
 * Single state layers that animate transform rotations can be merged when their animation doesn't change over time. On the test avatars: 41 -> 23 layers instead of 41 -> 24 and 36 -> 18 instead of 36 -> 19.
