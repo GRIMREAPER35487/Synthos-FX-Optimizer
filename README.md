@@ -11,7 +11,7 @@ So everything except the FX layer work is permanently off. This also removes mos
 
 ## What it does
 * Deletes useless FX layers (no states, 0 weight with no weight control, or only animating bindings that don't exist).
-* Merges simple toggle and multi-toggle layers into a single direct blend tree ([technique](https://notes.sleightly.dev/dbt-combining/)).
+* Merges simple toggle, multi-toggle, AnyState, complete graph and Entry-Exit layers into a single direct blend tree ([technique](https://notes.sleightly.dev/dbt-combining/)).
 * Deletes unused animator parameters.
 * Disables phys bones whose only mesh is toggled off.
 * Removes blend shapes that are never animated and merges blend shapes that are always animated in the same ratio.
@@ -48,9 +48,11 @@ Toggles are layers that:
   * Transition conditions can be bool `if` & `if not`, int `greater x` & `less x + 1` or float `greater x` & `less x`.
   * If one state is empty and relies on write defaults, the value the avatar shows while the toggle is off has to be known (a lower constant layer or the scene value).
 
+A toggle on a bool that is only ever 0 or 1 (a bool expression parameter or none, nothing animates it and parameter drivers only set it to 0 or 1) whose off state is empty goes into the merged layer as just its on animation, weighted by the bool. While the bool is 0 the layers below show through, like they did through the empty state. That skips a 1D blend tree and an animation per toggle, which made the merged layer ~40% cheaper with 100 such toggles.
+
 Layers are never merged when they are additive or have an avatar mask while animating transforms or muscles. Layers that animate transform rotations (rotations blend differently inside blend trees) are only merged when they have a single state whose animation never changes over time.
 
-Layers that animate the same properties as other layers can be merged as long as the merged layer can be placed so that every shared property keeps the same winner. Two merged layers never animate the same property. Curves on objects, components or blend shapes that don't exist don't count as shared.
+Layers that animate the same properties as other layers can be merged as long as the merged layer can be placed so that every shared property keeps the same winner. Two merged layers never animate the same property: of two candidates that do, the one that shares properties with more of the other candidates stays a normal layer (on a tie the later one). Curves on objects, components or blend shapes that don't exist don't count as shared.
 
 Animations that don't change over time get a length of 0 in the merged tree, so they don't change its timing. Only one merged layer may have animations that change over time, so it keeps playing at its own speed.
 
@@ -62,6 +64,17 @@ Multi toggles are layers that:
   * For each \[0, n\) there is one any state transition that points to one unique state.
   * All any state transitions have only one int equals condition with the value of the state index. They all have to use the same int parameter.
   * The int parameter can't be used with a not equals condition in any transition condition anywhere in the FX Layer.
+
+State selectors are other layers whose state only depends on the current value of one parameter, like AnyState menus, layers where every state transitions to every other state, and Entry-Exit layers (Entry picks a state, every state goes to Exit when its condition stops being true). They become a 1D blend tree on that parameter when:
+  * They have no state behaviours or sub state machines.
+  * All transition conditions use the same bool, int or float parameter, and no transition has exit time, a duration, mute or solo.
+  * For every value of the parameter, every state the layer can be in switches straight to the same state, and that state stays. Layers that remember something (for example on above 0.6 and off below 0.4) are kept.
+  * All states that get selected animate the same properties, or are empty with write defaults and the value without them is known (like toggles).
+  * An int parameter isn't compared with not equals in another layer.
+
+Conditions on constant parameters don't count as a parameter: they are checked with the value the parameter always has. A parameter is constant when it isn't an expression parameter or a VRChat parameter, and no animation, parameter driver, phys bone or contact sets it. VRCFury sliders use one as an always true value (Entry -> Off -> On while it isn't 0), so they select their On state.
+
+A state with motion time (a slider) can be merged when it's the only state the layer selects and every curve of its clip is a straight line between its keys. It becomes a 1D blend tree on the motion time parameter with a sample at every key, which is exact. Clips with eased or stepped curves are kept, since a blend tree can only blend linearly between samples.
 ### Delete Unused Animator Parameters
 Removes parameters that aren't used by any transition, blend tree, state, parameter driver or audio behaviour from the generated controller.
 ### Disable Phys Bones When Unused

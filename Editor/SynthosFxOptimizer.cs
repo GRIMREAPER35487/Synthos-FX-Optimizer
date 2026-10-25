@@ -1613,7 +1613,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                     continue;
                 layerCopyPaths[i] = $"{trashBinPath}c{i}_{GetControllerFileName(controller)}.controller";
                 optimizedControllers[i] = controller == GetFXLayer()
-                    ? AnimatorOptimizer.Run(controller, layerCopyPaths[i], fxLayerMap, messages, DeleteUnusedAnimatorParameters, fxLayersToMerge, fxLayersToDestroy, constantAnimatedValuesToAdd.Select(kvp => (kvp.Key, kvp.Value)).ToList(), GetFXLayerRestingValues(), mergedLayerPosition)
+                    ? AnimatorOptimizer.Run(controller, layerCopyPaths[i], fxLayerMap, messages, DeleteUnusedAnimatorParameters, fxLayersToMerge, fxLayersToDestroy, constantAnimatedValuesToAdd.Select(kvp => (kvp.Key, kvp.Value)).ToList(), GetFXLayerRestingValues(), mergedLayerPosition, GetFXLayerStateSelectors(), GetZeroOneFXParameters())
                     : AnimatorOptimizer.Run(controller, layerCopyPaths[i], fxLayerMap, messages, DeleteUnusedAnimatorParameters);
                 optimizedControllers[i].name = $"Base{i}_{GetControllerFileName(controller)}";
                 avDescriptor.baseAnimationLayers[i].animatorController = optimizedControllers[i];
@@ -2060,6 +2060,280 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         return AnimatorOptimizer.IsConstantCurve(curve);
     }
 
+    // Bool FX parameters that are only ever 0 or 1: their expression parameter is a bool (or there is none), no clip animates them and
+    // parameter drivers only set them to 0 or 1. A merged toggle on one of them can weight its on clip with the bool directly.
+    private HashSet<string> cache_ZeroOneFXParameters = null;
+    public HashSet<string> GetZeroOneFXParameters()
+    {
+        if (cache_ZeroOneFXParameters != null)
+            return cache_ZeroOneFXParameters;
+        var fxLayer = GetFXLayer();
+        var result = new HashSet<string>(fxLayer == null ? new string[0]
+            : fxLayer.parameters.Where(p => p.type == AnimatorControllerParameterType.Bool).Select(p => p.name));
+        var expressionParameters = GetAvatarDescriptor().expressionParameters?.parameters;
+        if (expressionParameters != null)
+            result.ExceptWith(expressionParameters.Where(p => p != null && p.valueType != VRC.SDK3.Avatars.ScriptableObjects.VRCExpressionParameters.ValueType.Bool).Select(p => p.name));
+        foreach (var controller in GetAvDescriptorControllers())
+        {
+            foreach (var layer in controller.layers.Where(l => l.stateMachine != null))
+            {
+                foreach (var motion in layer.stateMachine.EnumerateAllStates().Select(s => s.motion).Where(m => m != null))
+                    result.ExceptWith(motion.EnumerateAllClips().SelectMany(AnimationUtility.GetCurveBindings).Where(b => b.type == typeof(Animator)).Select(b => b.propertyName));
+                foreach (var driver in layer.stateMachine.EnumerateAllBehaviours().OfType<VRCAvatarParameterDriver>())
+                    result.ExceptWith(driver.parameters.Where(p => p.type != VRCAvatarParameterDriver.ChangeType.Set || (p.value != 0 && p.value != 1)).Select(p => p.name));
+            }
+        }
+        return cache_ZeroOneFXParameters = result;
+    }
+
+    // Parameters VRChat sets on every avatar, see https://creators.vrchat.com/avatars/animator-parameters/
+    private static readonly HashSet<string> BuiltInParameters = new HashSet<string>() {
+        "IsLocal", "PreviewMode", "Viseme", "Voice", "GestureLeft", "GestureRight", "GestureLeftWeight", "GestureRightWeight",
+        "AngularY", "VelocityX", "VelocityY", "VelocityZ", "VelocityMagnitude", "Upright", "Grounded", "Seated", "AFK",
+        "TrackingType", "VRMode", "MuteSelf", "InStation", "Earmuffs", "IsOnFriendsList", "AvatarVersion", "IsAnimatorEnabled",
+        "ScaleModified", "ScaleFactor", "ScaleFactorInverse", "EyeHeightAsMeters", "EyeHeightAsPercent", "Supine", "GroundProximity",
+    };
+
+    // FX parameters that keep their default value forever: nothing sets them, they aren't expression parameters or VRChat parameters,
+    // no clip or parameter driver writes them and no phys bone or contact outputs to them. VRCFury uses these as an always true value.
+    private Dictionary<string, float> cache_ConstantFXParameters = null;
+    public Dictionary<string, float> GetConstantFXParameters()
+    {
+        if (cache_ConstantFXParameters != null)
+            return cache_ConstantFXParameters;
+        var fxLayer = GetFXLayer();
+        var result = fxLayer == null ? new Dictionary<string, float>() : fxLayer.parameters
+            .Where(p => p.type != AnimatorControllerParameterType.Trigger && !BuiltInParameters.Contains(p.name))
+            .ToDictionary(p => p.name, p => p.type == AnimatorControllerParameterType.Bool ? (p.defaultBool ? 1f : 0f)
+                : p.type == AnimatorControllerParameterType.Int ? p.defaultInt : p.defaultFloat);
+        var expressionParameters = GetAvatarDescriptor().expressionParameters?.parameters;
+        if (expressionParameters != null)
+            foreach (var p in expressionParameters.Where(p => p != null))
+                result.Remove(p.name);
+        foreach (var controller in GetAvDescriptorControllers())
+        {
+            foreach (var layer in controller.layers.Where(l => l.stateMachine != null))
+            {
+                foreach (var motion in layer.stateMachine.EnumerateAllStates().Select(s => s.motion).Where(m => m != null))
+                    foreach (var binding in motion.EnumerateAllClips().SelectMany(AnimationUtility.GetCurveBindings).Where(b => b.type == typeof(Animator)))
+                        result.Remove(binding.propertyName);
+                foreach (var driver in layer.stateMachine.EnumerateAllBehaviours().OfType<VRCAvatarParameterDriver>())
+                    foreach (var p in driver.parameters)
+                        result.Remove(p.name);
+            }
+        }
+        foreach (var physBone in GetComponentsInChildren<VRCPhysBone>(true).Where(pb => !string.IsNullOrEmpty(pb.parameter)))
+            foreach (var name in result.Keys.Where(n => n.StartsWith(physBone.parameter + "_")).ToList())
+                result.Remove(name);
+        foreach (var receiver in GetComponentsInChildren<VRCContactReceiver>(true))
+            result.Remove(receiver.parameter ?? "");
+        return cache_ConstantFXParameters = result;
+    }
+
+    // layers that become a 1D blend tree because their state only depends on one parameter's current value
+    private Dictionary<int, AnimatorOptimizer.StateSelector> cache_FXLayerStateSelectors = null;
+    public Dictionary<int, AnimatorOptimizer.StateSelector> GetFXLayerStateSelectors()
+    {
+        AnalyzeFXLayerMergeAbility();
+        return cache_FXLayerStateSelectors ?? new Dictionary<int, AnimatorOptimizer.StateSelector>();
+    }
+
+    // A layer is a state selector when the state it ends up in only depends on the current value of a single parameter, not on the state it
+    // was in before: from every reachable state the transition Unity takes for a value leads to the same state, and that state stays.
+    // This covers AnyState layers, layers where every state transitions to every other state and Entry-Exit layers (a transition to Exit
+    // goes through the entry transitions right away). Conditions only compare the parameter to their thresholds, so the values at and next
+    // to every threshold cover all values. Transitions are instant (no exit time, no duration), so the layer switches state the same frame
+    // the parameter changes, like the 1D blend tree that replaces it.
+    // Conditions on constant parameters (see GetConstantFXParameters) always hold or never hold, so they are checked with the constant
+    // value. A layer with only those, like a VRCFury slider (Entry -> Off -> On while an always true value isn't 0), selects one state.
+    private static bool TryGetStateSelector(AnimatorStateMachine stateMachine, AnimatorControllerParameter[] parameters,
+        Dictionary<string, float> constantParameters, out AnimatorOptimizer.StateSelector selector, out string failReason)
+    {
+        selector = null;
+        failReason = null;
+        if (stateMachine.defaultState == null)
+        {
+            failReason = "no default state";
+            return false;
+        }
+        var stateTransitions = stateMachine.anyStateTransitions.Concat(stateMachine.states.SelectMany(s => s.state.transitions)).ToList();
+        var allTransitions = stateMachine.entryTransitions.Cast<AnimatorTransitionBase>().Concat(stateTransitions).ToList();
+        foreach (var t in allTransitions)
+        {
+            if (t.mute || t.solo)
+                failReason = "has a mute or solo transition";
+            else if (t.destinationStateMachine != null)
+                failReason = "a transition goes to a state machine";
+            // an entry transition without conditions is always taken, a state transition without them and without exit time never is
+            else if (t.conditions.Length == 0 && t is AnimatorStateTransition)
+                failReason = "a transition has no conditions";
+            else if (t is AnimatorStateTransition st && st.hasExitTime)
+                failReason = "a transition has exit time";
+            else if (t is AnimatorStateTransition st2 && st2.duration != 0f)
+                failReason = "a transition has a duration";
+            if (failReason != null)
+                return false;
+        }
+        foreach (var c in allTransitions.SelectMany(t => t.conditions).Where(c => constantParameters.ContainsKey(c.parameter)))
+        {
+            var type = parameters.FirstOrDefault(p => p.name == c.parameter)?.type;
+            bool boolMode = c.mode == AnimatorConditionMode.If || c.mode == AnimatorConditionMode.IfNot;
+            bool compareMode = c.mode == AnimatorConditionMode.Greater || c.mode == AnimatorConditionMode.Less;
+            if (!(type == AnimatorControllerParameterType.Bool ? boolMode : type == AnimatorControllerParameterType.Float ? compareMode : !boolMode))
+            {
+                failReason = $"constant parameter {c.parameter} has a {c.mode} condition";
+                return false;
+            }
+        }
+        var parameterNames = allTransitions.SelectMany(t => t.conditions).Select(c => c.parameter).Where(p => !constantParameters.ContainsKey(p)).Distinct().ToList();
+        if (parameterNames.Count > 1)
+        {
+            failReason = $"conditions use {parameterNames.Count} parameters";
+            return false;
+        }
+        var parameter = parameterNames.Count == 0 ? null : parameters.FirstOrDefault(p => p.name == parameterNames[0]);
+        if (parameterNames.Count == 1 && (parameter == null || parameter.type == AnimatorControllerParameterType.Trigger))
+        {
+            failReason = parameter == null ? $"didn't find parameter {parameterNames[0]}" : $"parameter {parameter.name} is a trigger";
+            return false;
+        }
+        var conditions = allTransitions.SelectMany(t => t.conditions).Where(c => !constantParameters.ContainsKey(c.parameter)).ToList();
+        var thresholds = conditions.Select(c => c.threshold).Distinct().OrderBy(t => t).ToList();
+        List<float> values;
+        switch (parameter?.type)
+        {
+            case null:
+                values = new List<float>() { 0 };
+                break;
+            case AnimatorControllerParameterType.Bool:
+                if (conditions.Any(c => c.mode != AnimatorConditionMode.If && c.mode != AnimatorConditionMode.IfNot))
+                    failReason = $"bool parameter {parameter.name} has a condition other than true or false";
+                values = new List<float>() { 0, 1 };
+                break;
+            case AnimatorControllerParameterType.Int:
+                if (conditions.Any(c => c.mode == AnimatorConditionMode.If || c.mode == AnimatorConditionMode.IfNot))
+                    failReason = $"int parameter {parameter.name} has a bool condition";
+                else if (thresholds.Any(t => t != Mathf.Round(t) || Mathf.Abs(t) > 1000f))
+                    failReason = $"int parameter {parameter.name} has a threshold that isn't a whole number up to 1000";
+                values = thresholds.SelectMany(t => new[] { t - 1, t, t + 1 }).Distinct().OrderBy(v => v).ToList();
+                break;
+            default:
+                if (conditions.Any(c => c.mode != AnimatorConditionMode.Greater && c.mode != AnimatorConditionMode.Less))
+                    failReason = $"float parameter {parameter.name} has a condition other than greater or less";
+                // the blend tree switches between threshold -+ 0.001, which float precision can't tell apart for big values
+                else if (thresholds.Any(t => Mathf.Abs(t) > 1000f))
+                    failReason = $"float parameter {parameter.name} has a threshold above 1000";
+                else if (Enumerable.Range(1, Math.Max(0, thresholds.Count - 1)).Any(j => thresholds[j] - thresholds[j - 1] < 0.004f))
+                    failReason = $"float parameter {parameter.name} has thresholds closer than 0.004";
+                // one value inside every range between thresholds, the exact threshold values blend between both sides like a toggle
+                values = new List<float>() { thresholds[0] - 1 };
+                for (int j = 1; j < thresholds.Count; j++)
+                    values.Add((thresholds[j - 1] + thresholds[j]) / 2);
+                values.Add(thresholds[^1] + 1);
+                break;
+        }
+        if (failReason != null)
+            return false;
+
+        bool Holds(AnimatorCondition c, float v)
+        {
+            if (constantParameters.TryGetValue(c.parameter, out var constant))
+                v = constant;
+            return c.mode switch
+            {
+                AnimatorConditionMode.If => v != 0,
+                AnimatorConditionMode.IfNot => v == 0,
+                AnimatorConditionMode.Greater => v > c.threshold,
+                AnimatorConditionMode.Less => v < c.threshold,
+                AnimatorConditionMode.Equals => v == c.threshold,
+                AnimatorConditionMode.NotEqual => v != c.threshold,
+                _ => false,
+            };
+        }
+        AnimatorState Entry(float v) =>
+            stateMachine.entryTransitions.FirstOrDefault(t => t.conditions.All(c => Holds(c, v)))?.destinationState ?? stateMachine.defaultState;
+        // Unity checks the AnyState transitions first, then the transitions of the current state, and takes the first one whose conditions hold
+        AnimatorState Next(AnimatorState state, float v)
+        {
+            foreach (var t in stateMachine.anyStateTransitions)
+            {
+                if (t.conditions.All(c => Holds(c, v)) && (t.canTransitionToSelf || t.destinationState != state))
+                    return t.destinationState;
+            }
+            var transition = state.transitions.FirstOrDefault(t => t.conditions.All(c => Holds(c, v)));
+            return transition == null ? state : transition.isExit ? Entry(v) : transition.destinationState;
+        }
+
+        var reachable = new HashSet<AnimatorState>() { stateMachine.defaultState };
+        reachable.UnionWith(values.Select(Entry));
+        var toCheck = new Queue<AnimatorState>(reachable);
+        while (toCheck.Count > 0)
+        {
+            var state = toCheck.Dequeue();
+            foreach (var next in values.Select(v => Next(state, v)))
+            {
+                if (reachable.Add(next))
+                    toCheck.Enqueue(next);
+            }
+        }
+        var selected = new List<AnimatorState>();
+        foreach (var v in values)
+        {
+            var target = Next(stateMachine.defaultState, v);
+            var other = reachable.FirstOrDefault(s => Next(s, v) != target);
+            if (other != null)
+            {
+                failReason = $"with {parameter?.name ?? "constant parameters"} = {v} the state depends on the previous state ({other.name} goes to {Next(other, v).name}, not {target.name})";
+                return false;
+            }
+            if (Next(target, v) != target)
+            {
+                failReason = $"with {parameter?.name ?? "constant parameters"} = {v} the layer keeps switching states";
+                return false;
+            }
+            selected.Add(target);
+        }
+
+        // 1D blend tree children: every range of values that selects the same state gets a child at both of its ends
+        var points = new List<(float threshold, AnimatorState state)>();
+        if (parameter == null)
+        {
+            points.Add((0, selected[0]));
+        }
+        else if (parameter.type == AnimatorControllerParameterType.Float)
+        {
+            for (int j = 0; j < selected.Count; j++)
+            {
+                if (j > 0)
+                    points.Add((thresholds[j - 1] + 0.001f, selected[j]));
+                if (j < thresholds.Count)
+                    points.Add((thresholds[j] - 0.001f, selected[j]));
+            }
+        }
+        else
+        {
+            // a whole number between two checked values selects the same state as the lower one
+            for (int j = 0; j < values.Count; j++)
+            {
+                points.Add((values[j], selected[j]));
+                if (j + 1 < values.Count && values[j + 1] - 1 > values[j])
+                    points.Add((values[j + 1] - 1, selected[j]));
+            }
+        }
+        var children = new List<(float threshold, AnimatorState state)>();
+        for (int j = 0; j < points.Count; j++)
+        {
+            bool sameAsNeighbours = j > 0 && j + 1 < points.Count && points[j - 1].state == points[j].state && points[j + 1].state == points[j].state;
+            if (!sameAsNeighbours)
+                children.Add(points[j]);
+        }
+        selector = new AnimatorOptimizer.StateSelector() { parameter = parameter?.name, children = children };
+        return true;
+    }
+
+    private static bool IsRotationBinding(EditorCurveBinding b) => b.type == typeof(Transform)
+        && (b.propertyName.StartsWith("localEulerAngles") || b.propertyName.StartsWith("m_LocalRotation") || b.propertyName.StartsWith("m_LocalEuler"));
+
     private List<List<string>> cache_AnalyzeFXLayerMergeAbility;
     public List<List<string>> AnalyzeFXLayerMergeAbility()
     {
@@ -2072,6 +2346,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         var fxLayerLayers = GetFXLayerLayers();
         var errorMessages = fxLayerLayers.Select(layer => new List<string>()).ToList();
         cache_FXLayerRestingValues = new Dictionary<int, List<(EditorCurveBinding binding, float value)>>();
+        cache_FXLayerStateSelectors = new Dictionary<int, AnimatorOptimizer.StateSelector>();
 
         foreach (var controller in GetAvDescriptorControllers())
         {
@@ -2101,6 +2376,8 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
         var fxLayerParameters = fxLayer.parameters;
         var intParams = new HashSet<string>(fxLayerParameters.Where(p => p.type == AnimatorControllerParameterType.Int).Select(p => p.name));
         var intParamsWithNotEqualConditions = new HashSet<string>();
+        // merged layers turn their int parameters into floats, which other layers can't compare with not equal anymore
+        var intParamNotEqualLayers = new Dictionary<string, HashSet<int>>();
 
         for (int i = 0; i < fxLayerLayers.Length; i++) {
             if (uselessLayers.Contains(i)) {
@@ -2109,6 +2386,9 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             foreach (var condition in fxLayerLayers[i].stateMachine.EnumerateAllTransitions().SelectMany(t => t.conditions)) {
                 if (condition.mode == AnimatorConditionMode.NotEqual && intParams.Contains(condition.parameter)) {
                     intParamsWithNotEqualConditions.Add(condition.parameter);
+                    if (!intParamNotEqualLayers.TryGetValue(condition.parameter, out var layers))
+                        intParamNotEqualLayers[condition.parameter] = layers = new HashSet<int>();
+                    layers.Add(i);
                 }
             }
         }
@@ -2151,11 +2431,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 errorMessages[i].Add($"has state machine behaviours");
                 continue;
             }
-            if (stateMachine.entryTransitions.Length > 0)
-            {
-                errorMessages[i].Add($"has extra entry transitions");
-                continue;
-            }
             if (layer.defaultWeight != 1)
             {
                 errorMessages[i].Add($"default weight {layer.defaultWeight}");
@@ -2174,8 +2449,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 continue;
             }
             var layerClips = stateMachine.EnumerateAllStates().Where(s => s.motion != null).SelectMany(s => s.motion.EnumerateAllClips()).Distinct().ToList();
-            var rotationBinding = layerClips.SelectMany(c => AnimationUtility.GetCurveBindings(c))
-                .FirstOrDefault(b => b.type == typeof(Transform) && (b.propertyName.StartsWith("localEulerAngles") || b.propertyName.StartsWith("m_LocalRotation") || b.propertyName.StartsWith("m_LocalEuler")));
+            var rotationBinding = layerClips.SelectMany(c => AnimationUtility.GetCurveBindings(c)).FirstOrDefault(IsRotationBinding);
             if (rotationBinding.type != null && stateMachine.states.Length != 1)
             {
                 errorMessages[i].Add($"{rotationBinding.path} animates transform rotation, which works differently in blend trees");
@@ -2223,16 +2497,23 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 movingLayers.Add(i);
             }
 
-            bool IsStateConvertableToAnimationOrBlendTree(AnimatorState state) {
+            // motion time is only allowed where the state is the layer's only selected motion (a single state or a state selector)
+            // and the 1D tree that replaces it is exact, see AnimatorOptimizer.GetExactMotionTimePoints
+            bool IsStateConvertableToAnimationOrBlendTree(AnimatorState state, bool allowMotionTime = false) {
                 if (state.motion == null) {
                     errorMessages[i].Add($"{state.name} has no motion");
                     return false;
                 }
                 if (state.motion is AnimationClip clip) {
                     if (state.timeParameterActive) {
-                        // motion time approximation is lossy, so motion time layers are never merged
-                        errorMessages[i].Add($"{state.name} has motion time");
-                        return false;
+                        if (!allowMotionTime) {
+                            errorMessages[i].Add($"{state.name} has motion time");
+                            return false;
+                        }
+                        if (AnimatorOptimizer.GetExactMotionTimePoints(clip) == null) {
+                            errorMessages[i].Add($"{state.name} has motion time and a curve that isn't straight between its keys");
+                            return false;
+                        }
                     } else {
                         // check if all curves are constant
                         var bindings = AnimationUtility.GetCurveBindings(clip);
@@ -2293,268 +2574,323 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
 
             if (states.Length == 1) {
                 var state = states[0].state;
-                if (!IsStateConvertableToAnimationOrBlendTree(state))
+                if (!IsStateConvertableToAnimationOrBlendTree(state, true))
                     continue;
                 errorMessages[i].Add(state.motion is AnimationClip ? $"motion time" : $"blend tree");
             }
 
-            var param = states.SelectMany(s => s.state.transitions).Concat(stateMachine.anyStateTransitions).SelectMany(t => t.conditions).Select(c => c.parameter).Distinct().ToList();
-            var paramLookup = param.ToDictionary(p => p, p => fxLayerParameters.FirstOrDefault(p2 => p2.name == p));
-            if (paramLookup.Values.Any(p => p == null)) {
-                errorMessages[i].Add($"didn't find parameter {paramLookup.First(p => p.Value == null).Key}");
-                continue;
+            // The empty state of a write defaults layer doesn't animate anything, so the layer shows the value the property has without it
+            // (see TryGetRestingValue). The merged tree needs that value as an explicit clip.
+            bool TryStoreRestingValues(AnimationClip onClip) {
+                var restingList = new List<(EditorCurveBinding binding, float value)>();
+                var onClipBindings = AnimationUtility.GetCurveBindings(onClip);
+                var onClipBindingNames = new HashSet<(string, string)>(onClipBindings.Select(b => (b.path, b.propertyName)));
+                foreach (var binding in onClipBindings) {
+                    // A blend tree writes every component of a Transform position/scale, the ones the clip doesn't animate
+                    // get their default (0 or 1) instead of the scene value, so partially animated vectors can't be merged.
+                    if (binding.type == typeof(Transform) && binding.propertyName.Length > 2 && binding.propertyName[^2] == '.'
+                        && (binding.propertyName.StartsWithSimple("m_LocalPosition") || binding.propertyName.StartsWithSimple("m_LocalScale"))) {
+                        var vectorName = binding.propertyName.Substring(0, binding.propertyName.Length - 1);
+                        if (!(onClipBindingNames.Contains((binding.path, vectorName + "x")) && onClipBindingNames.Contains((binding.path, vectorName + "y"))
+                            && onClipBindingNames.Contains((binding.path, vectorName + "z")))) {
+                            errorMessages[i].Add($"relies on write defaults and only animates some components of the Transform vector {binding.path}/{vectorName.TrimEnd('.')}");
+                            restingList = null;
+                            break;
+                        }
+                    }
+                    var keys = AnimationUtility.GetEditorCurve(onClip, binding).keys;
+                    if (!TryGetRestingValue(binding, i, out var restingValue, out var failReason)) {
+                        errorMessages[i].Add($"relies on write defaults and the resting value of {binding.path}/{binding.propertyName} is not known: {failReason}");
+                        restingList = null;
+                        break;
+                    }
+                    restingList.Add((binding, restingValue));
+                    float oldFlipValue = keys.Length > 0 ? 1 - keys[0].value : 0;
+                    if (Mathf.Abs(restingValue - oldFlipValue) > 1e-6f) {
+                        LogToFile($"- Layer ({i}) {layer.name}: resting value of {binding.path}/{binding.propertyName} is {restingValue} (on value {(keys.Length > 0 ? keys[0].value : 0)}), flipping the on value would have given {oldFlipValue}");
+                    }
+                }
+                if (restingList == null)
+                    return false;
+                cache_FXLayerRestingValues[i] = restingList;
+                return true;
             }
 
-            if (states.Length == 2) {
-                var allTransitions = AnimatorOptimizer.GetNonEntryTransitions(stateMachine);
-                var transitionDestinationIndices = allTransitions.Select(t => Array.FindIndex(states, s => s.state == t.destinationState)).ToList();
-                if (transitionDestinationIndices.Any(i => i < 0 || i >= states.Length))
-                {
-                    errorMessages[i].Add($"a transition destination state is not in the states array");
-                    continue;
-                }
-                var state0transitions = transitionDestinationIndices.Count(i => i == 0);
-                var state1transitions = transitionDestinationIndices.Count(i => i == 1);
-                if (state0transitions != 1 && state1transitions != 1)
-                {
-                    errorMessages[i].Add($"no single transition state");
-                    continue;
-                }
-                var singleTransitionStateIndex = state0transitions == 1 ? 1 : 0;
-                var orState = states[singleTransitionStateIndex].state;
-                var andState = states[1 - singleTransitionStateIndex].state;
-                var orStateTransitions = allTransitions.Where(t => t.destinationState == andState).ToArray();
-                var andStateTransitions = allTransitions.Where(t => t.destinationState == orState).ToArray();
-                var stateTransitions = singleTransitionStateIndex == 0
-                    ? new [] { orStateTransitions, andStateTransitions }
-                    : new [] { andStateTransitions, orStateTransitions };
-                if (orStateTransitions[0].conditions.Length != andStateTransitions.Length)
-                {
-                    errorMessages[i].Add($"OR state has {orStateTransitions[0].conditions.Length} conditions but AND state has {andStateTransitions.Length} transitions");
-                    continue;
-                }
-                if (andStateTransitions.Length == 0) {
-                    errorMessages[i].Add($"AND state has no transitions");
-                    continue;
-                }
-                if (andStateTransitions.Any(t => t.conditions.Length != 1)) {
-                    errorMessages[i].Add($"a AND state transition has multiple conditions");
-                    continue;
-                }
-                if (allTransitions.Any(t => t.mute || t.solo)) {
-                    errorMessages[i].Add($"has a mute or solo transition");
-                    continue;
-                }
-                bool conditionError = false;
-                foreach (var condition in orStateTransitions[0].conditions) {
-                    if (condition.mode == AnimatorConditionMode.Equals || condition.mode == AnimatorConditionMode.NotEqual) {
-                        errorMessages[i].Add($"a transition condition mode is {condition.mode}");
-                        conditionError = true;
-                        break;
-                    }
-                    if (intParamsWithNotEqualConditions.Contains(condition.parameter)) {
-                        errorMessages[i].Add($"parameter {condition.parameter} has a not equal condition somewhere");
-                        conditionError = true;
-                        break;
-                    }
-                    var inverseConditionMode = condition.mode == AnimatorConditionMode.If ? AnimatorConditionMode.IfNot : AnimatorConditionMode.If;
-                    if (condition.mode == AnimatorConditionMode.Greater)
-                        inverseConditionMode = AnimatorConditionMode.Less;
-                    if (condition.mode == AnimatorConditionMode.Less)
-                        inverseConditionMode = AnimatorConditionMode.Greater;
-                    if ((condition.mode == AnimatorConditionMode.If || condition.mode == AnimatorConditionMode.IfNot)
-                        && !andStateTransitions.Any(t => t.conditions.Any(c => c.parameter == condition.parameter && c.mode == inverseConditionMode))) {
-                        errorMessages[i].Add($"condition with parameter {condition.parameter} has no inverse transition");
-                        conditionError = true;
-                        break;
-                    }
-                    // the merged blend tree puts its thresholds at threshold -+ 0.001, which float precision can't tell apart for big values
-                    if (paramLookup[condition.parameter].type == AnimatorControllerParameterType.Float
-                        && (condition.mode == AnimatorConditionMode.Greater || condition.mode == AnimatorConditionMode.Less)
-                        && Mathf.Abs(condition.threshold) > 1000f) {
-                        errorMessages[i].Add($"parameter {condition.parameter} is float with a threshold of {condition.threshold}");
-                        conditionError = true;
-                        break;
-                    }
-                    bool isInt = paramLookup[condition.parameter].type == AnimatorControllerParameterType.Int;
-                    float inverseThreshold = condition.threshold + (isInt ? (condition.mode == AnimatorConditionMode.Greater ? 1 : -1) : 0);
-                    if ((condition.mode == AnimatorConditionMode.Greater || condition.mode == AnimatorConditionMode.Less)
-                        && !andStateTransitions.Any(t => t.conditions.Any(c => c.parameter == condition.parameter && c.mode == inverseConditionMode && c.threshold == inverseThreshold))) {
-                        errorMessages[i].Add($"condition with parameter {condition.parameter} has no inverse transition");
-                        conditionError = true;
-                        break;
-                    }
-                }
-                if (conditionError) {
-                    continue;
+            // the 2 state toggle and the int multi toggle shapes, layers that don't fit them can still be a state selector
+            void AnalyzeToggle() {
+                var param = states.SelectMany(s => s.state.transitions).Concat(stateMachine.anyStateTransitions).SelectMany(t => t.conditions).Select(c => c.parameter).Distinct().ToList();
+                var paramLookup = param.ToDictionary(p => p, p => fxLayerParameters.FirstOrDefault(p2 => p2.name == p));
+                if (paramLookup.Values.Any(p => p == null)) {
+                    errorMessages[i].Add($"didn't find parameter {paramLookup.First(p => p.Value == null).Key}");
+                    return;
                 }
 
-                bool reliesOnWriteDefaults = false;
-                for (int j = 0; j < 2; j++) {
-                    var state = states[j].state;
-                    var otherState = states[1 - j].state;
-                    if (stateTransitions[j].Any(t => t.destinationState != otherState)) {
-                        errorMessages[i].Add($"{state} transition destination state is not the other state");
-                        break;
+                if (states.Length == 2) {
+                    var allTransitions = AnimatorOptimizer.GetNonEntryTransitions(stateMachine);
+                    var transitionDestinationIndices = allTransitions.Select(t => Array.FindIndex(states, s => s.state == t.destinationState)).ToList();
+                    if (transitionDestinationIndices.Any(i => i < 0 || i >= states.Length))
+                    {
+                        errorMessages[i].Add($"a transition destination state is not in the states array");
+                        return;
                     }
-                    if (stateTransitions[j].Any(t => t.hasExitTime && t.exitTime != 0.0f)) {
-                        errorMessages[i].Add($"{state} transition has exit time");
-                        break;
+                    var state0transitions = transitionDestinationIndices.Count(i => i == 0);
+                    var state1transitions = transitionDestinationIndices.Count(i => i == 1);
+                    if (state0transitions != 1 && state1transitions != 1)
+                    {
+                        errorMessages[i].Add($"no single transition state");
+                        return;
                     }
-                    if (AnimatorOptimizer.IsNullOrEmpty(state.motion)) {
-                        if (AnimatorOptimizer.IsNullOrEmpty(otherState.motion)) {
-                            errorMessages[i].Add($"both states have no motion or are empty clips");
+                    var singleTransitionStateIndex = state0transitions == 1 ? 1 : 0;
+                    var orState = states[singleTransitionStateIndex].state;
+                    var andState = states[1 - singleTransitionStateIndex].state;
+                    var orStateTransitions = allTransitions.Where(t => t.destinationState == andState).ToArray();
+                    var andStateTransitions = allTransitions.Where(t => t.destinationState == orState).ToArray();
+                    var stateTransitions = singleTransitionStateIndex == 0
+                        ? new [] { orStateTransitions, andStateTransitions }
+                        : new [] { andStateTransitions, orStateTransitions };
+                    if (orStateTransitions[0].conditions.Length != andStateTransitions.Length)
+                    {
+                        errorMessages[i].Add($"OR state has {orStateTransitions[0].conditions.Length} conditions but AND state has {andStateTransitions.Length} transitions");
+                        return;
+                    }
+                    if (andStateTransitions.Length == 0) {
+                        errorMessages[i].Add($"AND state has no transitions");
+                        return;
+                    }
+                    if (andStateTransitions.Any(t => t.conditions.Length != 1)) {
+                        errorMessages[i].Add($"a AND state transition has multiple conditions");
+                        return;
+                    }
+                    if (allTransitions.Any(t => t.mute || t.solo)) {
+                        errorMessages[i].Add($"has a mute or solo transition");
+                        return;
+                    }
+                    bool conditionError = false;
+                    foreach (var condition in orStateTransitions[0].conditions) {
+                        if (condition.mode == AnimatorConditionMode.Equals || condition.mode == AnimatorConditionMode.NotEqual) {
+                            errorMessages[i].Add($"a transition condition mode is {condition.mode}");
+                            conditionError = true;
                             break;
-                        } else if (!(otherState.motion is AnimationClip)) {
-                            errorMessages[i].Add($"state {j} has no motion or an empty clip but {1 - j} has non animation clip motion");
-                            break;
-                        } else if (!otherState.writeDefaultValues || !state.writeDefaultValues) {
-                            errorMessages[i].Add($"state {j} has no motion or an empty clip but states do not have write defaults");
-                            break;
-                        } else {
-                            reliesOnWriteDefaults = true;
                         }
-                        continue;
-                    } else if (state.motion == otherState.motion) {
-                        if (state.motion is AnimationClip clip) {
-                            if (AnimationUtility.GetObjectReferenceCurveBindings(clip).Any()) {
-                                errorMessages[i].Add($"both states use the same motion but it has object reference curves");
-                                break;
-                            }
-                            if (!DoesClipHaveExactlyTwoKeyframes(clip)) {
-                                errorMessages[i].Add($"both states use the same motion but it doesn't have exactly 2 keyframes");
-                                break;
-                            }
-                            if (states.Any(s => s.state.speedParameterActive || s.state.timeParameterActive)) {
-                                errorMessages[i].Add($"both states use the same motion but at least one state has speed or time parameter active");
-                                break;
-                            }
-                            if (!((state.speed > 0 && otherState.speed < 0) || (state.speed < 0 && otherState.speed > 0))) {
-                                errorMessages[i].Add($"both states use the same motion but neither has negative speed");
-                                break;
-                            }
-                        } else {
-                            errorMessages[i].Add($"both states use the same motion but it's not an animation clip");
+                        if (intParamsWithNotEqualConditions.Contains(condition.parameter)) {
+                            errorMessages[i].Add($"parameter {condition.parameter} has a not equal condition somewhere");
+                            conditionError = true;
                             break;
                         }
-                    } else if (!IsStateConvertableToAnimationOrBlendTree(state)) {
-                        break;
+                        var inverseConditionMode = condition.mode == AnimatorConditionMode.If ? AnimatorConditionMode.IfNot : AnimatorConditionMode.If;
+                        if (condition.mode == AnimatorConditionMode.Greater)
+                            inverseConditionMode = AnimatorConditionMode.Less;
+                        if (condition.mode == AnimatorConditionMode.Less)
+                            inverseConditionMode = AnimatorConditionMode.Greater;
+                        if ((condition.mode == AnimatorConditionMode.If || condition.mode == AnimatorConditionMode.IfNot)
+                            && !andStateTransitions.Any(t => t.conditions.Any(c => c.parameter == condition.parameter && c.mode == inverseConditionMode))) {
+                            errorMessages[i].Add($"condition with parameter {condition.parameter} has no inverse transition");
+                            conditionError = true;
+                            break;
+                        }
+                        // the merged blend tree puts its thresholds at threshold -+ 0.001, which float precision can't tell apart for big values
+                        if (paramLookup[condition.parameter].type == AnimatorControllerParameterType.Float
+                            && (condition.mode == AnimatorConditionMode.Greater || condition.mode == AnimatorConditionMode.Less)
+                            && Mathf.Abs(condition.threshold) > 1000f) {
+                            errorMessages[i].Add($"parameter {condition.parameter} is float with a threshold of {condition.threshold}");
+                            conditionError = true;
+                            break;
+                        }
+                        bool isInt = paramLookup[condition.parameter].type == AnimatorControllerParameterType.Int;
+                        float inverseThreshold = condition.threshold + (isInt ? (condition.mode == AnimatorConditionMode.Greater ? 1 : -1) : 0);
+                        if ((condition.mode == AnimatorConditionMode.Greater || condition.mode == AnimatorConditionMode.Less)
+                            && !andStateTransitions.Any(t => t.conditions.Any(c => c.parameter == condition.parameter && c.mode == inverseConditionMode && c.threshold == inverseThreshold))) {
+                            errorMessages[i].Add($"condition with parameter {condition.parameter} has no inverse transition");
+                            conditionError = true;
+                            break;
+                        }
                     }
-                }
-                bool onlyBoolBindings = true;
-                foreach (var binding in fxLayerBindings[i]) {
-                    if (!binding.path.EndsWith("m_Enabled") && !binding.path.EndsWith("m_IsActive")) {
-                        onlyBoolBindings = false;
-                        break;
+                    if (conditionError) {
+                        return;
                     }
-                }
-                if (!reliesOnWriteDefaults) {
-                    var bindings0 = GetAllMotionBindings(states[0].state);
-                    var bindings1 = GetAllMotionBindings(states[1].state);
-                    if (!bindings1.SetEquals(bindings0)) {
-                        bindings1.Except(bindings0).Concat(bindings0.Except(bindings1)).ToList()
-                            .ForEach(b => errorMessages[i].Add($"{b.path}/{b.propertyName} is not animated in both states"));
-                        continue;
-                    }
-                }
-                if (reliesOnWriteDefaults) {
-                    // The empty state doesn't animate anything, so the layer shows the value the property has without it
-                    // (see TryGetRestingValue). The merged tree needs that value as an explicit clip.
-                    var emptyStateIndex = AnimatorOptimizer.IsNullOrEmpty(states[0].state.motion) ? 0 : 1;
-                    if (states[1 - emptyStateIndex].state.motion is AnimationClip onClip) {
-                        var restingList = new List<(EditorCurveBinding binding, float value)>();
-                        var onClipBindings = AnimationUtility.GetCurveBindings(onClip);
-                        var onClipBindingNames = new HashSet<(string, string)>(onClipBindings.Select(b => (b.path, b.propertyName)));
-                        foreach (var binding in onClipBindings) {
-                            // A blend tree writes every component of a Transform position/scale, the ones the clip doesn't animate
-                            // get their default (0 or 1) instead of the scene value, so partially animated vectors can't be merged.
-                            if (binding.type == typeof(Transform) && binding.propertyName.Length > 2 && binding.propertyName[^2] == '.'
-                                && (binding.propertyName.StartsWithSimple("m_LocalPosition") || binding.propertyName.StartsWithSimple("m_LocalScale"))) {
-                                var vectorName = binding.propertyName.Substring(0, binding.propertyName.Length - 1);
-                                if (!(onClipBindingNames.Contains((binding.path, vectorName + "x")) && onClipBindingNames.Contains((binding.path, vectorName + "y"))
-                                    && onClipBindingNames.Contains((binding.path, vectorName + "z")))) {
-                                    errorMessages[i].Add($"relies on write defaults and only animates some components of the Transform vector {binding.path}/{vectorName.TrimEnd('.')}");
-                                    restingList = null;
+
+                    bool reliesOnWriteDefaults = false;
+                    for (int j = 0; j < 2; j++) {
+                        var state = states[j].state;
+                        var otherState = states[1 - j].state;
+                        if (stateTransitions[j].Any(t => t.destinationState != otherState)) {
+                            errorMessages[i].Add($"{state} transition destination state is not the other state");
+                            break;
+                        }
+                        if (stateTransitions[j].Any(t => t.hasExitTime && t.exitTime != 0.0f)) {
+                            errorMessages[i].Add($"{state} transition has exit time");
+                            break;
+                        }
+                        if (AnimatorOptimizer.IsNullOrEmpty(state.motion)) {
+                            if (AnimatorOptimizer.IsNullOrEmpty(otherState.motion)) {
+                                errorMessages[i].Add($"both states have no motion or are empty clips");
+                                break;
+                            } else if (!(otherState.motion is AnimationClip)) {
+                                errorMessages[i].Add($"state {j} has no motion or an empty clip but {1 - j} has non animation clip motion");
+                                break;
+                            } else if (!otherState.writeDefaultValues || !state.writeDefaultValues) {
+                                errorMessages[i].Add($"state {j} has no motion or an empty clip but states do not have write defaults");
+                                break;
+                            } else {
+                                reliesOnWriteDefaults = true;
+                            }
+                            continue;
+                        } else if (state.motion == otherState.motion) {
+                            if (state.motion is AnimationClip clip) {
+                                if (AnimationUtility.GetObjectReferenceCurveBindings(clip).Any()) {
+                                    errorMessages[i].Add($"both states use the same motion but it has object reference curves");
                                     break;
                                 }
-                            }
-                            var keys = AnimationUtility.GetEditorCurve(onClip, binding).keys;
-                            if (!TryGetRestingValue(binding, i, out var restingValue, out var failReason)) {
-                                errorMessages[i].Add($"relies on write defaults and the resting value of {binding.path}/{binding.propertyName} is not known: {failReason}");
-                                restingList = null;
+                                if (!DoesClipHaveExactlyTwoKeyframes(clip)) {
+                                    errorMessages[i].Add($"both states use the same motion but it doesn't have exactly 2 keyframes");
+                                    break;
+                                }
+                                if (states.Any(s => s.state.speedParameterActive || s.state.timeParameterActive)) {
+                                    errorMessages[i].Add($"both states use the same motion but at least one state has speed or time parameter active");
+                                    break;
+                                }
+                                if (!((state.speed > 0 && otherState.speed < 0) || (state.speed < 0 && otherState.speed > 0))) {
+                                    errorMessages[i].Add($"both states use the same motion but neither has negative speed");
+                                    break;
+                                }
+                            } else {
+                                errorMessages[i].Add($"both states use the same motion but it's not an animation clip");
                                 break;
                             }
-                            restingList.Add((binding, restingValue));
-                            float oldFlipValue = keys.Length > 0 ? 1 - keys[0].value : 0;
-                            if (Mathf.Abs(restingValue - oldFlipValue) > 1e-6f) {
-                                LogToFile($"- Layer ({i}) {layer.name}: resting value of {binding.path}/{binding.propertyName} is {restingValue} (on value {(keys.Length > 0 ? keys[0].value : 0)}), flipping the on value would have given {oldFlipValue}");
-                            }
-                        }
-                        if (restingList != null) {
-                            cache_FXLayerRestingValues[i] = restingList;
+                        } else if (!IsStateConvertableToAnimationOrBlendTree(state)) {
+                            break;
                         }
                     }
-                }
-                if (stateTransitions.Any(s => s.Any(t => t.duration != 0.0f)) && !onlyBoolBindings) {
-                    errorMessages[i].Add($"transition has non 0 duration and animates something other than m_Enabled/m_IsActive");
-                }
-                errorMessages[i].Add($"toggle");
-            }
-
-            if (states.Length > 2) {
-                if (paramLookup.Count != 1 || (paramLookup.Count == 1 && paramLookup.First().Value.type != AnimatorControllerParameterType.Int)) {
-                    errorMessages[i].Add($"more than 2 states and not a single int parameter");
-                    continue;
-                }
-                if (states.Any(s => s.state.transitions.Length != 0)) {
-                    errorMessages[i].Add($"more than 2 states and a state has transitions");
-                    continue;
-                }
-                if (intParamsWithNotEqualConditions.Contains(paramLookup.First().Key)) {
-                    errorMessages[i].Add($"parameter {paramLookup.First().Key} has a not equal condition somewhere");
-                    continue;
-                }
-                if (stateMachine.anyStateTransitions.Length != states.Length) {
-                    errorMessages[i].Add($"any state transitions length is not the same as states length");
-                    continue;
-                }
-                if (stateMachine.anyStateTransitions.Any(t => t.conditions.Length != 1)) {
-                    errorMessages[i].Add($"a transition has multiple conditions");
-                    continue;
-                }
-                if (stateMachine.anyStateTransitions.Any(t => (t.hasExitTime && t.exitTime != 0.0f) || t.duration != 0.0f)) {
-                    errorMessages[i].Add($"a transition has non 0 exit time or duration");
-                    continue;
-                }
-                var thresholdsNeeded = Enumerable.Range(0, states.Length).Select(number => (float)number).ToList();
-                if (thresholdsNeeded.Any(t => !stateMachine.anyStateTransitions.Any(tr => tr.conditions[0].threshold == t && tr.conditions[0].mode == AnimatorConditionMode.Equals))) {
-                    errorMessages[i].Add($"missing some transition with correct threshold and condition mode");
-                    continue;
-                }
-                if (states.Any(s => s.state.motion == null)) {
-                    errorMessages[i].Add($"a state has no motion");
-                    continue;
-                }
-                if (states.Any(s => !IsStateConvertableToAnimationOrBlendTree(s.state))) {
-                    continue;
-                }
-                var firstBindings = GetAllMotionBindings(states[0].state);
-                bool hadError = false;
-                for (int j = 1; j < states.Length; j++) {
-                    var bindings = GetAllMotionBindings(states[j].state);
-                    if (!bindings.SetEquals(firstBindings)) {
-                        bindings.Except(firstBindings).Concat(firstBindings.Except(bindings)).ToList()
-                            .ForEach(b => errorMessages[i].Add($"{b.path}/{b.propertyName} is not animated in all states"));
-                        hadError = true;
-                        break;
+                    bool onlyBoolBindings = true;
+                    foreach (var binding in fxLayerBindings[i]) {
+                        if (!binding.path.EndsWith("m_Enabled") && !binding.path.EndsWith("m_IsActive")) {
+                            onlyBoolBindings = false;
+                            break;
+                        }
                     }
+                    if (!reliesOnWriteDefaults) {
+                        var bindings0 = GetAllMotionBindings(states[0].state);
+                        var bindings1 = GetAllMotionBindings(states[1].state);
+                        if (!bindings1.SetEquals(bindings0)) {
+                            bindings1.Except(bindings0).Concat(bindings0.Except(bindings1)).ToList()
+                                .ForEach(b => errorMessages[i].Add($"{b.path}/{b.propertyName} is not animated in both states"));
+                            return;
+                        }
+                    }
+                    if (reliesOnWriteDefaults) {
+                        var emptyStateIndex = AnimatorOptimizer.IsNullOrEmpty(states[0].state.motion) ? 0 : 1;
+                        if (states[1 - emptyStateIndex].state.motion is AnimationClip onClip) {
+                            TryStoreRestingValues(onClip);
+                        }
+                    }
+                    if (stateTransitions.Any(s => s.Any(t => t.duration != 0.0f)) && !onlyBoolBindings) {
+                        errorMessages[i].Add($"transition has non 0 duration and animates something other than m_Enabled/m_IsActive");
+                    }
+                    errorMessages[i].Add($"toggle");
                 }
-                if (hadError) {
-                    continue;
+
+                if (states.Length > 2) {
+                    if (paramLookup.Count != 1 || (paramLookup.Count == 1 && paramLookup.First().Value.type != AnimatorControllerParameterType.Int)) {
+                        errorMessages[i].Add($"more than 2 states and not a single int parameter");
+                        return;
+                    }
+                    if (states.Any(s => s.state.transitions.Length != 0)) {
+                        errorMessages[i].Add($"more than 2 states and a state has transitions");
+                        return;
+                    }
+                    if (intParamsWithNotEqualConditions.Contains(paramLookup.First().Key)) {
+                        errorMessages[i].Add($"parameter {paramLookup.First().Key} has a not equal condition somewhere");
+                        return;
+                    }
+                    if (stateMachine.anyStateTransitions.Length != states.Length) {
+                        errorMessages[i].Add($"any state transitions length is not the same as states length");
+                        return;
+                    }
+                    if (stateMachine.anyStateTransitions.Any(t => t.conditions.Length != 1)) {
+                        errorMessages[i].Add($"a transition has multiple conditions");
+                        return;
+                    }
+                    if (stateMachine.anyStateTransitions.Any(t => (t.hasExitTime && t.exitTime != 0.0f) || t.duration != 0.0f)) {
+                        errorMessages[i].Add($"a transition has non 0 exit time or duration");
+                        return;
+                    }
+                    var thresholdsNeeded = Enumerable.Range(0, states.Length).Select(number => (float)number).ToList();
+                    if (thresholdsNeeded.Any(t => !stateMachine.anyStateTransitions.Any(tr => tr.conditions[0].threshold == t && tr.conditions[0].mode == AnimatorConditionMode.Equals))) {
+                        errorMessages[i].Add($"missing some transition with correct threshold and condition mode");
+                        return;
+                    }
+                    if (states.Any(s => s.state.motion == null)) {
+                        errorMessages[i].Add($"a state has no motion");
+                        return;
+                    }
+                    if (states.Any(s => !IsStateConvertableToAnimationOrBlendTree(s.state))) {
+                        return;
+                    }
+                    var firstBindings = GetAllMotionBindings(states[0].state);
+                    bool hadError = false;
+                    for (int j = 1; j < states.Length; j++) {
+                        var bindings = GetAllMotionBindings(states[j].state);
+                        if (!bindings.SetEquals(firstBindings)) {
+                            bindings.Except(firstBindings).Concat(firstBindings.Except(bindings)).ToList()
+                                .ForEach(b => errorMessages[i].Add($"{b.path}/{b.propertyName} is not animated in all states"));
+                            hadError = true;
+                            break;
+                        }
+                    }
+                    if (hadError) {
+                        return;
+                    }
+                    errorMessages[i].Add($"multi toggle");
                 }
-                errorMessages[i].Add($"multi toggle");
             }
 
+            // AnyState, complete graph and Entry-Exit layers that pick their state from one parameter, see TryGetStateSelector.
+            // Returns why the layer can't be merged as one, or null if it can.
+            string AnalyzeStateSelector() {
+                if (!TryGetStateSelector(stateMachine, fxLayerParameters, GetConstantFXParameters(), out var selector, out var reason))
+                    return reason;
+                if (selector.parameter != null && intParamNotEqualLayers.TryGetValue(selector.parameter, out var notEqualLayers) && notEqualLayers.Any(l => l != i))
+                    return $"parameter {selector.parameter} has a not equal condition in another layer";
+                var selectedStates = selector.children.Select(c => c.state).Distinct().ToList();
+                var emptyStates = selectedStates.Where(s => AnimatorOptimizer.IsNullOrEmpty(s.motion)).ToList();
+                var filledStates = selectedStates.Except(emptyStates).ToList();
+                if (filledStates.Count == 0)
+                    return "no selected state has a motion";
+                foreach (var state in filledStates) {
+                    if (!IsStateConvertableToAnimationOrBlendTree(state, true))
+                        return $"state {state.name} can't be merged";
+                }
+                var firstBindings = GetAllMotionBindings(filledStates[0]);
+                if (filledStates.Skip(1).Any(s => !GetAllMotionBindings(s).SetEquals(firstBindings)))
+                    return "the selected states don't animate the same properties";
+                cache_FXLayerRestingValues.Remove(i);
+                if (emptyStates.Count > 0) {
+                    if (selectedStates.Any(s => !s.writeDefaultValues))
+                        return "a selected state is empty but not every selected state has write defaults";
+                    if (filledStates.Any(s => !(s.motion is AnimationClip) || s.timeParameterActive))
+                        return "a selected state is empty and another one has a blend tree or motion time";
+                    if (!TryStoreRestingValues((AnimationClip)filledStates[0].motion))
+                        return "relies on write defaults and a resting value is not known";
+                }
+                cache_FXLayerStateSelectors[i] = selector;
+                return null;
+            }
+
+            int shapeMessagesStart = errorMessages[i].Count;
+            if (stateMachine.entryTransitions.Length > 0)
+                errorMessages[i].Add("has entry transitions");
+            else
+                AnalyzeToggle();
+            var toggleShapes = new HashSet<string>() { "toggle", "multi toggle" };
+            if (states.Length >= 2 && errorMessages[i].Skip(shapeMessagesStart).Any(m => !toggleShapes.Contains(m))) {
+                var selectorFailReason = AnalyzeStateSelector();
+                if (selectorFailReason == null) {
+                    errorMessages[i].RemoveRange(shapeMessagesStart, errorMessages[i].Count - shapeMessagesStart);
+                    errorMessages[i].Add("state selector");
+                } else {
+                    errorMessages[i].Add($"not a state selector: {selectorFailReason}");
+                }
+            }
         }
         if (movingLayers.Count > 0)
             LogToFile($"- Layers with a clip that changes over time: {string.Join(", ", movingLayers.OrderBy(x => x).Select(x => $"({x}) {fxLayerLayers[x].name}"))}");
@@ -2578,7 +2914,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
     // the first one of the candidates that is still accepted gets it, so giving up the first one hands the spot to the next one.
     private void ResolveSharedFXLayerBindings(List<List<string>> errorMessages, List<HashSet<(string path, Type type)>> layerBindings, HashSet<int> uselessLayers, HashSet<int> movingLayers)
     {
-        var nonErrors = new HashSet<string>() {"toggle", "motion time", "blend tree", "multi toggle"};
+        var nonErrors = new HashSet<string>() {"toggle", "motion time", "blend tree", "multi toggle", "state selector"};
         var fxLayerLayers = GetFXLayerLayers();
         var candidates = Enumerable.Range(0, fxLayerLayers.Length)
             .Where(i => !uselessLayers.Contains(i) && errorMessages[i].Count > 0 && errorMessages[i].All(nonErrors.Contains)).ToList();
@@ -2684,6 +3020,10 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
             var owners = new Dictionary<(string path, Type type), int>();
             foreach (var b in constantBindings)
                 owners[b] = -1;
+            // Of two candidates sharing a binding, the one that shares bindings with more of the other candidates stays a normal layer,
+            // so a layer that touches everything (like VRCFury's Defaults layer when MMD compatibility is off) doesn't push out all
+            // the layers it overlaps with. On a tie the later one stays a normal layer.
+            int SharingCount(int layer) => accepted.Count(other => other != layer && layerBindings[layer].Overlaps(layerBindings[other]));
             int rejected = -1;
             string rejectedReason = null;
             foreach (var i in accepted)
@@ -2692,8 +3032,16 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 {
                     if (owners.TryGetValue(b, out var owner))
                     {
-                        rejected = i;
-                        rejectedReason = owner < 0 ? $"{b.path} is also written by the merged constants" : $"{b.path} is shared with merged layer {owner} {fxLayerLayers[owner].name}";
+                        if (owner >= 0 && SharingCount(owner) > SharingCount(i))
+                        {
+                            rejected = owner;
+                            rejectedReason = $"{b.path} is shared with {SharingCount(owner)} other merged layers, e.g. {i} {fxLayerLayers[i].name}";
+                        }
+                        else
+                        {
+                            rejected = i;
+                            rejectedReason = owner < 0 ? $"{b.path} is also written by the merged constants" : $"{b.path} is shared with merged layer {owner} {fxLayerLayers[owner].name}";
+                        }
                         break;
                     }
                 }
@@ -2766,7 +3114,7 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
     public FXLayerMergePlan GetFXLayerMergePlan()
     {
         var plan = new FXLayerMergePlan();
-        var nonErrors = new HashSet<string>() {"toggle", "motion time", "blend tree", "multi toggle"};
+        var nonErrors = new HashSet<string>() {"toggle", "motion time", "blend tree", "multi toggle", "state selector"};
         var analysisResult = AnalyzeFXLayerMergeAbility();
         var uselessLayers = FindUselessFXLayers();
         var layerCount = GetFXLayerLayers().Length;

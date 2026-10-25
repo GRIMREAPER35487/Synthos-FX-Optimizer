@@ -27,6 +27,8 @@ namespace d4rkpl4y3r.AvatarOptimizer
         private HashSet<string> intsToChangeToFloat = new HashSet<string>();
         private List<(EditorCurveBinding binding, float value)> constantCurvesToAdd = new List<(EditorCurveBinding binding, float value)>();
         private Dictionary<int, List<(EditorCurveBinding binding, float value)>> restingValues = new();
+        private Dictionary<int, StateSelector> stateSelectors = new();
+        private HashSet<string> zeroOneParameters = new();
         private int mergedLayerPosition = -1;
         private bool isFxLayer = false;
         private List<(string msg, int indent)> logMessages;
@@ -41,7 +43,7 @@ namespace d4rkpl4y3r.AvatarOptimizer
             assetPath = path;
         }
 
-        public static AnimatorController Run(AnimatorController source, string path, Dictionary<int, int> fxLayerMap, List<(string msg, int indent)> logMessages, bool deleteUnusedParameters = true, List<int> layersToMerge = null, List<int> layersToDestroy = null, List<(EditorCurveBinding binding, float value)> constantCurvesToAdd = null, Dictionary<int, List<(EditorCurveBinding binding, float value)>> restingValues = null, int mergedLayerPosition = -1)
+        public static AnimatorController Run(AnimatorController source, string path, Dictionary<int, int> fxLayerMap, List<(string msg, int indent)> logMessages, bool deleteUnusedParameters = true, List<int> layersToMerge = null, List<int> layersToDestroy = null, List<(EditorCurveBinding binding, float value)> constantCurvesToAdd = null, Dictionary<int, List<(EditorCurveBinding binding, float value)>> restingValues = null, int mergedLayerPosition = -1, Dictionary<int, StateSelector> stateSelectors = null, HashSet<string> zeroOneParameters = null)
         {
             var target = new AnimatorController();
             target.name = $"{source.name}(Optimized)";
@@ -57,6 +59,8 @@ namespace d4rkpl4y3r.AvatarOptimizer
             optimizer.isFxLayer = constantCurvesToAdd != null;
             optimizer.constantCurvesToAdd = constantCurvesToAdd ?? new();
             optimizer.restingValues = restingValues ?? new();
+            optimizer.stateSelectors = stateSelectors ?? new();
+            optimizer.zeroOneParameters = zeroOneParameters ?? new();
             optimizer.mergedLayerPosition = mergedLayerPosition;
             optimizer.logMessages = logMessages;
             optimizer.deleteUnusedParameters = deleteUnusedParameters;
@@ -72,6 +76,13 @@ namespace d4rkpl4y3r.AvatarOptimizer
             public float duration;
             public bool hasExitTime;
             public float exitTime;
+        }
+
+        // A layer whose current state only depends on the value of one parameter, as the children of the 1D blend tree that replaces it.
+        public class StateSelector
+        {
+            public string parameter;
+            public List<(float threshold, AnimatorState state)> children;
         }
 
         public static List<Transition> GetNonEntryTransitions(AnimatorStateMachine sm)
@@ -90,6 +101,29 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 });
             }
             return transitions;
+        }
+
+        // A 2 state toggle on a bool that is only ever 0 or 1 whose off state is empty: its on clip weighted by the bool gives the same result,
+        // at 0 the child writes nothing and the layers below show through like they did through the empty state. No resting values needed.
+        public static bool TryGetDirectToggle(AnimatorStateMachine sm, HashSet<string> zeroOneParameters, out int onIndex, out string parameter)
+        {
+            onIndex = -1;
+            parameter = null;
+            var states = sm.states;
+            if (zeroOneParameters == null || states.Length != 2)
+                return false;
+            var transitions = GetNonEntryTransitions(sm);
+            var singleIndex = transitions.Count(x => x.destinationState == states[0].state) == 1 ? 0 : 1;
+            var singleConditions = transitions.FirstOrDefault(c => c.destinationState == states[singleIndex].state)?.conditions;
+            if (singleConditions == null || singleConditions.Length != 1 || !zeroOneParameters.Contains(singleConditions[0].parameter)
+                || (singleConditions[0].mode != AnimatorConditionMode.If && singleConditions[0].mode != AnimatorConditionMode.IfNot))
+                return false;
+            int on = singleConditions[0].mode == AnimatorConditionMode.If ? singleIndex : 1 - singleIndex;
+            if (!IsNullOrEmpty(states[1 - on].state.motion) || IsNullOrEmpty(states[on].state.motion))
+                return false;
+            onIndex = on;
+            parameter = singleConditions[0].parameter;
+            return true;
         }
 
         // Unity's AddTransition/AddCondition/AddStateMachineBehaviour helpers record a full undo snapshot of the
@@ -328,6 +362,36 @@ namespace d4rkpl4y3r.AvatarOptimizer
             return motion != null && motion.EnumerateAllClips().Any(c => !IsClipConstant(c));
         }
 
+        // Normalized times at which a motion time clip has to be sampled so that a 1D blend tree over those samples gives exactly the
+        // clip's values, or null if there aren't any. That is the case when every curve is straight between its keys (tangents equal the
+        // slope), since the tree interpolates linearly between neighbouring samples. Both clamp the time to 0..1 when not looping.
+        // Rotations are left out because a tree blends them as quaternions.
+        public static float[] GetExactMotionTimePoints(AnimationClip clip)
+        {
+            if (AnimationUtility.GetAnimationClipSettings(clip).loopTime || AnimationUtility.GetObjectReferenceCurveBindings(clip).Length > 0)
+                return null;
+            var bindings = AnimationUtility.GetCurveBindings(clip);
+            if (bindings.Any(b => b.type == typeof(Transform) && !b.propertyName.StartsWithSimple("m_LocalPosition") && !b.propertyName.StartsWithSimple("m_LocalScale")))
+                return null;
+            var curves = bindings.Select(b => AnimationUtility.GetEditorCurve(clip, b)).ToArray();
+            var keyTimes = curves.SelectMany(c => c.keys.Select(k => k.time)).ToList();
+            float length = keyTimes.Count > 0 ? keyTimes.Max() : 0;
+            if (length <= 0 || keyTimes.Min() < 0 || Mathf.Abs(clip.length - length) > 1e-4f)
+                return null;
+            foreach (var keys in curves.Select(c => c.keys))
+            {
+                for (int j = 1; j < keys.Length; j++)
+                {
+                    float slope = (keys[j].value - keys[j - 1].value) / (keys[j].time - keys[j - 1].time);
+                    float tolerance = 1e-4f * Mathf.Max(1, Mathf.Abs(slope));
+                    if (!(Mathf.Abs(keys[j - 1].outTangent - slope) <= tolerance && Mathf.Abs(keys[j].inTangent - slope) <= tolerance))
+                        return null;
+                }
+            }
+            var points = keyTimes.Select(t => t / length).Append(0).Append(1).Distinct().OrderBy(x => x).ToArray();
+            return points.Length <= 32 ? points : null;
+        }
+
         // Every clip in the merged tree is 0 seconds long, so the tree has no duration for the one clip that moves to be slowed down by.
         private readonly Dictionary<AnimationClip, AnimationClip> zeroLengthClips = new();
         private AnimationClip ToZeroLengthClip(AnimationClip clip)
@@ -422,6 +486,12 @@ namespace d4rkpl4y3r.AvatarOptimizer
                     if (!s.timeParameterActive || maxKeyframeTime == 0) {
                         return clip;
                     }
+                    var exactPoints = GetExactMotionTimePoints(clip);
+                    if (exactPoints != null) {
+                        return CreateBlendTree(s.timeParameter, exactPoints.Select(x => new ChildMotion() {
+                            motion = CloneFromTime(clip, x * maxKeyframeTime, $"{clip.name} ({Mathf.RoundToInt(x * 100)}%)"),
+                            threshold = x }).ToArray());
+                    }
                     var interpolationPoints = motionTimeSamplePoints
                         .Concat(keys.Select(t => t / maxKeyframeTime))
                         .Distinct()
@@ -461,59 +531,80 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 return s.motion;
             }
             var sourceLayers = source.layers;
+            var directWeightedToggles = new List<string>();
             foreach (var i in layersToMerge) {
                 var layer = sourceLayers[i].stateMachine;
                 var layerStates = layer.states;
                 Motion layerMotion = null;
+                string weightParameter = mergedLayersParameter;
                 bool negativeSpeedToggle = layerStates.Length == 2
                     && layerStates.Any(s => s.state.speed < 0)
                     && layerStates[0].state.motion == layerStates[1].state.motion;
-                if (layerStates.Length == 2) {
+                if (stateSelectors.TryGetValue(i, out var selector)) {
+                    var selectedStates = selector.children.Select(c => c.state).Distinct().ToList();
+                    var stateMotions = selectedStates.ToDictionary(s => s, s => ConvertStateToMotion(s, false));
+                    var onClip = stateMotions.Values.FirstOrDefault(m => !IsNullOrEmpty(m)) as AnimationClip;
+                    foreach (var s in selectedStates.Where(s => IsNullOrEmpty(stateMotions[s])))
+                        stateMotions[s] = CreateRestingClip(i, onClip);
+                    layerMotion = selectedStates.Count == 1
+                        ? stateMotions[selectedStates[0]]
+                        : CreateBlendTree(selector.parameter, selector.children.Select(c => new ChildMotion() { motion = stateMotions[c.state], threshold = c.threshold }).ToArray());
+                } else if (layerStates.Length == 2) {
                     var layerMotions = layerStates.Select(x => ConvertStateToMotion(x.state, negativeSpeedToggle)).ToArray();
-                    if (IsNullOrEmpty(layerMotions[0]))
-                        layerMotions[0] = CreateRestingClip(i, layerMotions[1] as AnimationClip);
-                    if (IsNullOrEmpty(layerMotions[1]))
-                        layerMotions[1] = CreateRestingClip(i, layerMotions[0] as AnimationClip);
-
                     var transitions = GetNonEntryTransitions(layer);
                     var singleIndex = transitions.Count(x => x.destinationState == layerStates[0].state) == 1 ? 0 : 1;
-                    var andMotion = layerMotions[singleIndex];
-                    var orMotion = layerMotions[1 - singleIndex];
-                    foreach (var condition in transitions.First(c => c.destinationState == layerStates[singleIndex].state).conditions)
+                    var singleConditions = transitions.First(c => c.destinationState == layerStates[singleIndex].state).conditions;
+                    // skips the 1D tree and the resting clip, which makes the merged layer cheaper
+                    if (TryGetDirectToggle(layer, zeroOneParameters, out int onIndex, out var toggleParameter))
                     {
-                        var innerTreeMotions = new ChildMotion[2] {
-                            new() { motion = orMotion },
-                            new() { motion = andMotion },
-                        };
-                        var param = source.parameters.FirstOrDefault(x => x.name == condition.parameter);
-                        if (condition.mode == AnimatorConditionMode.IfNot)
-                        {
-                            innerTreeMotions = innerTreeMotions.Reverse().ToArray();
-                        }
-                        if (param.type == AnimatorControllerParameterType.Float)
-                        {
-                            innerTreeMotions[0].threshold = innerTreeMotions[1].threshold = condition.threshold;
-                            if (condition.mode == AnimatorConditionMode.Less)
-                            {
-                                innerTreeMotions = innerTreeMotions.Reverse().ToArray();
-                            }
-                            innerTreeMotions[0].threshold -= 0.001f;
-                            innerTreeMotions[1].threshold += 0.001f;
-                        }
-                        else if (param.type == AnimatorControllerParameterType.Int)
-                        {
-                            innerTreeMotions[0].threshold = innerTreeMotions[1].threshold = condition.threshold + 0.5f;
-                            if (condition.mode == AnimatorConditionMode.Less)
-                            {
-                                innerTreeMotions[0].threshold = innerTreeMotions[1].threshold = condition.threshold - 0.5f;
-                                innerTreeMotions = innerTreeMotions.Reverse().ToArray();
-                            }
-                            innerTreeMotions[0].threshold -= 0.25f;
-                            innerTreeMotions[1].threshold += 0.25f;
-                        }
-                        andMotion = CreateBlendTree(condition.parameter, innerTreeMotions);
+                        layerMotion = layerMotions[onIndex];
+                        weightParameter = toggleParameter;
+                        MarkParameterUsed(weightParameter);
+                        directWeightedToggles.Add(sourceLayers[i].name);
                     }
-                    layerMotion = andMotion;
+                    if (layerMotion == null) {
+                        if (IsNullOrEmpty(layerMotions[0]))
+                            layerMotions[0] = CreateRestingClip(i, layerMotions[1] as AnimationClip);
+                        if (IsNullOrEmpty(layerMotions[1]))
+                            layerMotions[1] = CreateRestingClip(i, layerMotions[0] as AnimationClip);
+                        var andMotion = layerMotions[singleIndex];
+                        var orMotion = layerMotions[1 - singleIndex];
+                        foreach (var condition in singleConditions)
+                        {
+                            var innerTreeMotions = new ChildMotion[2] {
+                                new() { motion = orMotion },
+                                new() { motion = andMotion },
+                            };
+                            var param = source.parameters.FirstOrDefault(x => x.name == condition.parameter);
+                            if (condition.mode == AnimatorConditionMode.IfNot)
+                            {
+                                innerTreeMotions = innerTreeMotions.Reverse().ToArray();
+                            }
+                            if (param.type == AnimatorControllerParameterType.Float)
+                            {
+                                innerTreeMotions[0].threshold = innerTreeMotions[1].threshold = condition.threshold;
+                                if (condition.mode == AnimatorConditionMode.Less)
+                                {
+                                    innerTreeMotions = innerTreeMotions.Reverse().ToArray();
+                                }
+                                innerTreeMotions[0].threshold -= 0.001f;
+                                innerTreeMotions[1].threshold += 0.001f;
+                            }
+                            else if (param.type == AnimatorControllerParameterType.Int)
+                            {
+                                innerTreeMotions[0].threshold = innerTreeMotions[1].threshold = condition.threshold + 0.5f;
+                                if (condition.mode == AnimatorConditionMode.Less)
+                                {
+                                    innerTreeMotions[0].threshold = innerTreeMotions[1].threshold = condition.threshold - 0.5f;
+                                    innerTreeMotions = innerTreeMotions.Reverse().ToArray();
+                                }
+                                innerTreeMotions[0].threshold -= 0.25f;
+                                innerTreeMotions[1].threshold += 0.25f;
+                            }
+                            andMotion = CreateBlendTree(condition.parameter, innerTreeMotions);
+                        }
+                        layerMotion = andMotion;
+                    }
                 } else if (layerStates.Length == 1) {
                     layerMotion = ConvertStateToMotion(layerStates[0].state, negativeSpeedToggle);
                 } else {
@@ -524,12 +615,19 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 // a layer that changes over time keeps its own clip lengths (its timing depends on them), it is the only one allowed to move
                 if (!(layerStates.Length == 1 && IsMotionMoving(layerMotion)))
                     layerMotion = ToZeroLengthMotion(layerMotion);
-                layerMotion.name = sourceLayers[i].name;
+                // a direct weighted on clip is the original clip, which keeps its name
+                if (weightParameter == mergedLayersParameter)
+                    layerMotion.name = sourceLayers[i].name;
                 motions.Add(new ChildMotion() {
                     motion = layerMotion,
-                    directBlendParameter = mergedLayersParameter,
+                    directBlendParameter = weightParameter,
                     timeScale = 1f
                 });
+            }
+            if (directWeightedToggles.Count > 0)
+            {
+                logMessages.Add(($"Toggles weighted by their bool in the merged layer ({directWeightedToggles.Count}):", 0));
+                directWeightedToggles.ForEach(name => logMessages.Add((name, 1)));
             }
             if (constantCurvesToAdd.Count > 0)
             {

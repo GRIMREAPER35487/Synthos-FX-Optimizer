@@ -151,7 +151,7 @@ public class SynthosFxOptimizerEditor : Editor
         var perfRankChanges = new List<(string label, int oldValue, int newValue, PerformanceCategory category)>();
         if (optimizer.GetFXLayer() != null)
         {
-            var nonErrors = new HashSet<string>() {"toggle", "motion time", "blend tree", "multi toggle"};
+            var nonErrors = new HashSet<string>() {"toggle", "motion time", "blend tree", "multi toggle", "state selector"};
             var mergedLayerCount = optimizer.OptimizeFXLayer ? optimizer.AnalyzeFXLayerMergeAbility().Count(list => list.All(e => nonErrors.Contains(e))) : 0;
             var layerCount = optimizer.GetFXLayerLayers().Length;
             var optimizedLayerCount = mergedLayerCount > 1 ? layerCount - mergedLayerCount + 1 : layerCount;
@@ -184,11 +184,11 @@ public class SynthosFxOptimizerEditor : Editor
                 var uselessLayers = optimizer.FindUselessFXLayers();
                 var fxLayer = optimizer.GetFXLayer();
                 var fxLayerLayers = optimizer.GetFXLayerLayers();
-                var nonErrors = new HashSet<string>() {"toggle", "motion time", "useless", "blend tree", "multi toggle"};
+                var nonErrors = new HashSet<string>() {"toggle", "motion time", "useless", "blend tree", "multi toggle", "state selector"};
                 for (int i = 0; i < errorMessages.Count; i++)
                 {
                     var perfRating = PerformanceRating.VeryPoor;
-                    if (errorMessages[i].Count == 1 && (errorMessages[i][0] == "toggle" || errorMessages[i][0] == "multi toggle" || errorMessages[i][0] == "blend tree"))
+                    if (errorMessages[i].Count == 1 && (errorMessages[i][0] == "toggle" || errorMessages[i][0] == "multi toggle" || errorMessages[i][0] == "state selector" || errorMessages[i][0] == "blend tree"))
                         perfRating = PerformanceRating.Good;
                     else if (errorMessages[i].Count == 1 && errorMessages[i][0] == "motion time")
                         perfRating = PerformanceRating.Medium;

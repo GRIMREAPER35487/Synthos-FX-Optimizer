@@ -1,4 +1,12 @@
 # Synthos FX Optimizer
+## v1.1.0-beta.1
+### Changes
+* More layer shapes can be merged: AnyState layers, layers where every state transitions to every other state, and Entry-Exit layers (diamond and linear). A layer like this becomes a 1D blend tree in the merged layer when its state only depends on the current value of one bool, int or float parameter: for every value, every state it can be in switches straight to the same state. Layers that remember something, use several parameters, exit time or transition durations are kept as is.
+* The FX layer merge preview and the log show why a layer isn't a state selector.
+* Bool toggles with an empty off state are cheaper in the merged layer: the on animation is weighted by the bool itself instead of a 1D blend tree between it and a resting animation. With 100 such toggles the merged layer took ~40% less animator time (5.8 ms -> 3.5 ms for 30 avatars). Only bools that are always 0 or 1 are used this way.
+* VRCFury slider layers can be merged: conditions on a parameter nothing ever changes (VRCFury's always true value) are checked with its value, and a motion time clip whose curves are straight between keys becomes an exact 1D blend tree. On the Druffle test avatar 11 more layers merge (FX 37 -> 26 layers) with ~7% less animator time; sliders with eased or stepped curves are kept.
+* Fix MMD compatibility off giving more layers instead of fewer: when merge candidates animate the same property, the one that overlaps with the most others (like VRCFury's Defaults layer) now stays a normal layer instead of pushing all of them out. With MMD compatibility off the test avatars now end up 1-2 layers below the default instead of up to 8 above it. Nothing changes with MMD compatibility on (the default).
+
 ## v1.0.1
 ### Changes
 * Fix the last upload summary showing the wrong avatar when several avatars in a scene share a blueprint id (for example the PC and Quest versions). The summary is now stored per avatar. Summaries saved by earlier versions aren't shown anymore, the next upload of each avatar creates a new one.
