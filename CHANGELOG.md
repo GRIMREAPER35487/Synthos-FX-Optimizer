@@ -1,4 +1,8 @@
 # Synthos FX Optimizer
+## v1.1.0
+### Changes
+* Stable release, same optimizer as v1.1.0-beta.2. It includes everything from v1.1.0-beta.1 and v1.1.0-beta.2: more layer shapes merge (AnyState, complete graph and Entry-Exit layers as state selectors, bool weighted toggles, VRCFury sliders), the MMD compatibility off fix, and the fix for Unity 6 uploads losing their animator transitions and behaviours.
+
 ## v1.1.0-beta.2
 ### Changes
 * Fix uploads from Unity 6 losing every animator transition and state behaviour. The optimized controllers were saved without them, so after upload the state machines couldn't change state: blinks never started, parameter drivers (like the one turning on blinking), tracking control and layer control behaviours were gone, and Base/Action layers like GoGo Loco were affected the same way. In the editor everything still looked fine because the objects only existed in memory. The controller files are now created before the copy starts, so Unity saves them into the file again. Only seen in Unity 6.
