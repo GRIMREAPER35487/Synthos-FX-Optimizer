@@ -49,7 +49,8 @@ namespace d4rkpl4y3r.AvatarOptimizer
             target.name = $"{source.name}(Optimized)";
             using (new Profiler.Section($"AnimatorOptimizer.CreateAsset"))
             {
-                AssetDatabase.CreateAsset(ScriptableObject.CreateInstance<BinarySerializationSO>(), path);
+                if (AssetDatabase.GetMainAssetTypeAtPath(path) != typeof(BinarySerializationSO))
+                    CreateControllerAsset(path);
                 AssetDatabase.AddObjectToAsset(target, path);
             }
             var optimizer = new AnimatorOptimizer(target, source, path);
@@ -65,6 +66,14 @@ namespace d4rkpl4y3r.AvatarOptimizer
             optimizer.logMessages = logMessages;
             optimizer.deleteUnusedParameters = deleteUnusedParameters;
             return optimizer.Run();
+        }
+
+        // Creates the empty file Run adds the controller copy to. Call it outside AssetDatabase.StartAssetEditing,
+        // see the comment where SynthosFxOptimizer copies the controllers.
+        public static string CreateControllerAsset(string path)
+        {
+            AssetDatabase.CreateAsset(ScriptableObject.CreateInstance<BinarySerializationSO>(), path);
+            return path;
         }
 
         public class Transition
@@ -278,9 +287,82 @@ namespace d4rkpl4y3r.AvatarOptimizer
                 }
             }
 
+            using (new Profiler.Section($"AnimatorOptimizer.PersistSubObjects"))
+            {
+                var persisted = PersistSubObjects();
+                if (persisted.Count > 0)
+                {
+                    var examples = string.Join(", ", persisted.Take(5));
+                    var message = $"{persisted.Count} objects of '{source.name}' were not in the controller asset and got added afterwards ({examples}). They would have been missing from the upload, please report this.";
+                    Debug.LogWarning($"SynthosFxOptimizer: {message}");
+                    logMessages.Add(($"Warning: {message}", 0));
+                }
+            }
+
             EditorUtility.SetDirty(target);
 
             return target;
+        }
+
+        // Safety net: Unity's AddTransition / AddStateMachineBehaviour helpers only put what they create into the controller
+        // file if the state already has an asset path (see CreateControllerAsset). Anything they left out works in the editor
+        // but would be missing from the saved controller and the upload, so it gets added here. Normally this finds nothing.
+        private List<string> PersistSubObjects()
+        {
+            var persisted = new List<string>();
+            var visited = new HashSet<Object>();
+            string currentLayer = null;
+            void Persist(Object o, bool hide)
+            {
+                if (o == null || !visited.Add(o) || EditorUtility.IsPersistent(o))
+                    return;
+                if (hide)
+                    o.hideFlags |= HideFlags.HideInHierarchy;
+                AddToAsset(o);
+                persisted.Add($"{o.GetType().Name} '{o.name}' in layer '{currentLayer}'");
+            }
+            void PersistMotion(Motion motion)
+            {
+                if (motion is not BlendTree tree || visited.Contains(tree))
+                    return;
+                Persist(tree, true);
+                foreach (var child in tree.children)
+                    PersistMotion(child.motion);
+            }
+            void PersistStateMachine(AnimatorStateMachine sm)
+            {
+                if (sm == null || visited.Contains(sm))
+                    return;
+                Persist(sm, false);
+                foreach (var b in sm.behaviours)
+                    Persist(b, true);
+                foreach (var t in sm.anyStateTransitions)
+                    Persist(t, true);
+                foreach (var t in sm.entryTransitions)
+                    Persist(t, true);
+                foreach (var child in sm.stateMachines)
+                {
+                    foreach (var t in sm.GetStateMachineTransitions(child.stateMachine))
+                        Persist(t, true);
+                    PersistStateMachine(child.stateMachine);
+                }
+                foreach (var child in sm.states)
+                {
+                    var state = child.state;
+                    Persist(state, false);
+                    foreach (var b in state.behaviours)
+                        Persist(b, true);
+                    foreach (var t in state.transitions)
+                        Persist(t, true);
+                    PersistMotion(state.motion);
+                }
+            }
+            foreach (var layer in target.layers)
+            {
+                currentLayer = layer.name;
+                PersistStateMachine(layer.stateMachine);
+            }
+            return persisted;
         }
 
         private AnimationClip CloneAndFlipCurves(AnimationClip clip)
@@ -474,7 +556,11 @@ namespace d4rkpl4y3r.AvatarOptimizer
             var motionTimeSamplePoints = Enumerable.Range(0, motionTimeSampleCount).Select(x => (float)x / (motionTimeSampleCount - 1)).ToArray();
             Motion ConvertStateToMotion(AnimatorState s, bool negativeSpeedToggle) {
                 if (s.motion is BlendTree tree) {
-                    return CloneBlendTree(null, tree);
+                    // CloneBlendTree only adds the child trees to the asset, the top one is up to the caller
+                    var treeCopy = CloneBlendTree(null, tree);
+                    treeCopy.hideFlags = HideFlags.HideInHierarchy;
+                    AddToAsset(treeCopy);
+                    return treeCopy;
                 } else if (s.motion is AnimationClip clip) {
                     (AnimationCurve curve, bool isEulerAngleBinding)[] curves = AnimationUtility.GetCurveBindings(clip)
                         .Select(binding => (AnimationUtility.GetEditorCurve(clip, binding), binding.propertyName.Contains("localEulerAngles"))).ToArray();

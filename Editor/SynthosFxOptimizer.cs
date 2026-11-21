@@ -1593,6 +1593,21 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 }
                 return sanitized;
             }
+            // The controller files have to exist before StartAssetEditing. Since Unity 6, GetAssetPath returns "" inside the
+            // block for an asset created in it, so AddTransition, AddStateMachineBehaviour and the other AnimatorState(Machine)
+            // helpers don't put the objects they create into the controller file. The copy then works in the editor, but the
+            // saved controller (and the upload) has no transitions or behaviours. Unity 2022 didn't have this problem.
+            for (int i = 0; i < avDescriptor.baseAnimationLayers.Length; i++)
+            {
+                if (avDescriptor.baseAnimationLayers[i].animatorController is AnimatorController controller)
+                    layerCopyPaths[i] = AnimatorOptimizer.CreateControllerAsset($"{trashBinPath}c{i}_{GetControllerFileName(controller)}.controller");
+            }
+            for (int i = 0; i < avDescriptor.specialAnimationLayers.Length; i++)
+            {
+                var index = i + avDescriptor.baseAnimationLayers.Length;
+                if (avDescriptor.specialAnimationLayers[i].animatorController is AnimatorController controller)
+                    layerCopyPaths[index] = AnimatorOptimizer.CreateControllerAsset($"{trashBinPath}c{index}_{GetControllerFileName(controller)}.controller");
+            }
             AssetDatabase.StartAssetEditing();
             List<(string msg, int indent)> messages = new();
             void LogMessages(string controllerName)
@@ -1611,7 +1626,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 var controller = avDescriptor.baseAnimationLayers[i].animatorController as AnimatorController;
                 if (controller == null)
                     continue;
-                layerCopyPaths[i] = $"{trashBinPath}c{i}_{GetControllerFileName(controller)}.controller";
                 optimizedControllers[i] = controller == GetFXLayer()
                     ? AnimatorOptimizer.Run(controller, layerCopyPaths[i], fxLayerMap, messages, DeleteUnusedAnimatorParameters, fxLayersToMerge, fxLayersToDestroy, constantAnimatedValuesToAdd.Select(kvp => (kvp.Key, kvp.Value)).ToList(), GetFXLayerRestingValues(), mergedLayerPosition, GetFXLayerStateSelectors(), GetZeroOneFXParameters())
                     : AnimatorOptimizer.Run(controller, layerCopyPaths[i], fxLayerMap, messages, DeleteUnusedAnimatorParameters);
@@ -1625,7 +1639,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 if (controller == null)
                     continue;
                 var index = i + avDescriptor.baseAnimationLayers.Length;
-                layerCopyPaths[index] = $"{trashBinPath}c{index}_{GetControllerFileName(controller)}.controller";
                 optimizedControllers[index] = AnimatorOptimizer.Run(controller, layerCopyPaths[index], fxLayerMap, messages, DeleteUnusedAnimatorParameters);
                 optimizedControllers[index].name = $"Special{index}_{GetControllerFileName(controller)}";
                 avDescriptor.specialAnimationLayers[i].animatorController = optimizedControllers[index];
@@ -5225,12 +5238,13 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 {
                     LogToFile($"- Baking {blendShapeIDs.Count} blendshapes from '{currentMeshPath}':");
                 }
+                // GetBlendShapeFrameVertices overwrites the whole buffer, so one set serves every baked shape
+                var deltaVertices = blendShapeIDs.Count > 0 ? new Vector3[sourceVertices.Length] : null;
+                var deltaNormals = blendShapeIDs.Count > 0 ? new Vector3[sourceVertices.Length] : null;
+                var deltaTangents = blendShapeIDs.Count > 0 ? new Vector3[sourceVertices.Length] : null;
                 foreach (int blendShapeID in blendShapeIDs)
                 {
                     var weight = Mathf.Clamp(skinnedMesh.GetBlendShapeWeight(blendShapeID) / 100f, 0, 1);
-                    var deltaVertices = new Vector3[sourceVertices.Length];
-                    var deltaNormals = new Vector3[sourceVertices.Length];
-                    var deltaTangents = new Vector3[sourceVertices.Length];
                     mesh.GetBlendShapeFrameVertices(blendShapeID, 0, deltaVertices, deltaNormals, deltaTangents);
                     for (int i = 0; i < sourceVertices.Length; i++)
                     {
@@ -5360,6 +5374,17 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                 vertexOffset.Add(vertexOffset[i] + basicMergedMeshesList[i].sharedMesh.vertexCount);
             }
             int combinedMeshVertexCount = combinedMesh.vertexCount;
+            // delta buffers are reused for every blend shape frame since AddBlendShapeFrame copies the data.
+            // GetBlendShapeFrameVertices overwrites the whole source buffer, the target buffers get cleared before use
+            var targetDeltaVertices = new Vector3[combinedMeshVertexCount];
+            var targetDeltaNormals = new Vector3[combinedMeshVertexCount];
+            var targetDeltaTangents = new Vector3[combinedMeshVertexCount];
+            void ClearTargetDeltas()
+            {
+                Array.Clear(targetDeltaVertices, 0, combinedMeshVertexCount);
+                Array.Clear(targetDeltaNormals, 0, combinedMeshVertexCount);
+                Array.Clear(targetDeltaTangents, 0, combinedMeshVertexCount);
+            }
             foreach (var entry in faceTrackingShapes.OrderBy(e => e.Key, System.StringComparer.Ordinal))
             {
                 string name = entry.Key;
@@ -5400,9 +5425,10 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                     frameWeights.Add(0);
                 foreach (float frameWeight in frameWeights)
                 {
-                    var vertices = new Vector3[combinedMeshVertexCount];
-                    var normals = new Vector3[combinedMeshVertexCount];
-                    var tangents = new Vector3[combinedMeshVertexCount];
+                    ClearTargetDeltas();
+                    var vertices = targetDeltaVertices;
+                    var normals = targetDeltaNormals;
+                    var tangents = targetDeltaTangents;
                     foreach (var source in sources)
                     {
                         if (source.weights.Length == 0)
@@ -5447,17 +5473,6 @@ public class SynthosFxOptimizer : MonoBehaviour, VRC.SDKBase.IEditorOnly
                     combinedMesh.AddBlendShapeFrame(name, frameWeight, vertices, normals, tangents);
                 }
                 LogToFile($"- Kept face tracking blendshape '{name}' on '{newPath}' from {sources.Count} meshes");
-            }
-            // delta buffers are reused for every blend shape frame since AddBlendShapeFrame copies the data.
-            // GetBlendShapeFrameVertices overwrites the whole source buffer, the target buffers get cleared before use
-            var targetDeltaVertices = new Vector3[combinedMeshVertexCount];
-            var targetDeltaNormals = new Vector3[combinedMeshVertexCount];
-            var targetDeltaTangents = new Vector3[combinedMeshVertexCount];
-            void ClearTargetDeltas()
-            {
-                Array.Clear(targetDeltaVertices, 0, combinedMeshVertexCount);
-                Array.Clear(targetDeltaNormals, 0, combinedMeshVertexCount);
-                Array.Clear(targetDeltaTangents, 0, combinedMeshVertexCount);
             }
             var sourceDeltaBuffers = new Dictionary<int, (Vector3[] vertices, Vector3[] normals, Vector3[] tangents)>();
             (Vector3[] vertices, Vector3[] normals, Vector3[] tangents) GetSourceDeltaBuffers(int vertexCount)

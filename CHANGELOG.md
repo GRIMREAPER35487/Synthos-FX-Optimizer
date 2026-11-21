@@ -1,4 +1,11 @@
 # Synthos FX Optimizer
+## v1.1.0-beta.2
+### Changes
+* Fix uploads from Unity 6 losing every animator transition and state behaviour. The optimized controllers were saved without them, so after upload the state machines couldn't change state: blinks never started, parameter drivers (like the one turning on blinking), tracking control and layer control behaviours were gone, and Base/Action layers like GoGo Loco were affected the same way. In the editor everything still looked fine because the objects only existed in memory. The controller files are now created before the copy starts, so Unity saves them into the file again. Only seen in Unity 6.
+* Fix a merged layer losing its blend tree on upload when the original layer was a single state playing a blend tree (for example contact or head pat layers).
+* After copying a controller the optimizer now checks that everything it uses is saved in the controller file. Anything missing is added and a warning names it.
+* Use less memory when baking and merging blend shapes.
+
 ## v1.1.0-beta.1
 ### Changes
 * More layer shapes can be merged: AnyState layers, layers where every state transitions to every other state, and Entry-Exit layers (diamond and linear). A layer like this becomes a 1D blend tree in the merged layer when its state only depends on the current value of one bool, int or float parameter: for every value, every state it can be in switches straight to the same state. Layers that remember something, use several parameters, exit time or transition durations are kept as is.
